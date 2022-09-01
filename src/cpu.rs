@@ -34,14 +34,14 @@ impl CPU {
             register_e: 0x56,
             register_h: 0x00,
             register_l: 0x0D,
-            stack_pointer: 0x0100,
-            program_counter: 0xFFFE,
+            stack_pointer: 0xFFFE,
+            program_counter: 0x0100,
             memory: [0; 0xFFFF],
             instructions: [init_instruction; 0xFF],
         };
 
         // LD instructions
-        // LD r, r' (each 1 M-cycle)
+        // LD r, r'  (1 M-cycle)
         for i in 0..8 {
             for j in 0..8 {
                 let source_num = j as u8;
@@ -62,9 +62,20 @@ impl CPU {
             }
         }
 
-        // LD A (DE)
+        // LD r, n  (2 M-cycles)
+        // for i in 0..8 {
+        //     let dest_num = i as u8;
+        //     let opcode: u8 = 0b00000110 | (dest_num << 3);
+
+        //     cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        //         if let Some(dest) = cpu.get_register(dest_num) {
+        //             cpu.program_counter += 1;
+        //         }
+        //     }));
+        // }
+
+        // LD A, (DE)  (2 M-cycles)
         cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
-            // 2 M-cycles
             let source = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
             cpu.register_a = source;
         }));
