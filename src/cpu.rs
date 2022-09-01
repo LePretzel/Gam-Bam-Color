@@ -63,16 +63,18 @@ impl CPU {
         }
 
         // LD r, n  (2 M-cycles)
-        // for i in 0..8 {
-        //     let dest_num = i as u8;
-        //     let opcode: u8 = 0b00000110 | (dest_num << 3);
+        for i in 0..8 {
+            let dest_num = i as u8;
+            let opcode: u8 = 0b00000110 | (dest_num << 3);
 
-        //     cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-        //         if let Some(dest) = cpu.get_register(dest_num) {
-        //             cpu.program_counter += 1;
-        //         }
-        //     }));
-        // }
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source = cpu.read(cpu.stack_pointer);
+                let dest_option = cpu.get_register(dest_num);
+                if let Some(dest) = dest_option {
+                    *dest = source;
+                }
+            }));
+        }
 
         // LD A, (DE)  (2 M-cycles)
         cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
@@ -82,7 +84,7 @@ impl CPU {
         cpu
     }
 
-    pub fn execute(&mut self, opcode: u8) {
+    fn execute(&mut self, opcode: u8) {
         if self.instructions[opcode as usize].is_none() {
             return;
         }
