@@ -1,4 +1,4 @@
-use std::rc::Rc;
+use std::{fs, rc::Rc};
 
 use crate::memory::Memory;
 
@@ -18,13 +18,13 @@ pub struct CPU {
 
     stack_pointer: u16,
     program_counter: u16,
-    memory: [u8; 0xFFFF],
-    instructions: [Option<Rc<dyn Fn(&mut Self) -> ()>>; 0xFF],
+    memory: [u8; 0xFFFF + 1],
+    instructions: [Option<Rc<dyn Fn(&mut Self) -> ()>>; 0xFF + 1],
 }
 
 impl CPU {
     pub fn new() -> Self {
-        const init_instruction: Option<Rc<dyn Fn(&mut CPU) -> ()>> = None;
+        const INIT_INSTRUCTION: Option<Rc<dyn Fn(&mut CPU) -> ()>> = None;
         let mut cpu = CPU {
             register_a: 0x11,
             register_f: 0x80,
@@ -36,8 +36,8 @@ impl CPU {
             register_l: 0x0D,
             stack_pointer: 0xFFFE,
             program_counter: 0x0100,
-            memory: [0; 0xFFFF],
-            instructions: [init_instruction; 0xFF],
+            memory: [0; 0xFFFF + 1],
+            instructions: [INIT_INSTRUCTION; 0xFF + 1],
         };
 
         // LD instructions
@@ -82,6 +82,44 @@ impl CPU {
             cpu.register_a = source;
         }));
         cpu
+    }
+
+    pub fn load(&mut self, rom_path: &str) -> std::io::Result<()> {
+        let mut program = fs::read(rom_path)?;
+        for i in 0..program.len() {
+            self.write(self.program_counter + (i as u16), program[i]);
+            // todo!("Limit rom size");
+        }
+        todo!("test");
+        Ok(())
+    }
+
+    pub fn run(&mut self) {
+        loop {
+            let opcode = self.read(self.program_counter);
+            if opcode != 0 {
+                println!("{:x}", opcode);
+            }
+            self.program_counter += 1;
+            self.execute(opcode);
+            todo!("test");
+        }
+    }
+
+    pub fn load_and_run(&mut self, rom_path: &str) {
+        let status = self.load(rom_path);
+        if let Ok(_) = status {
+            self.run();
+        }
+    }
+
+    fn run_test(&mut self, program: Vec<u8>) {
+        let mut test_pc: u16 = 0;
+        for _ in 0..program.len() {
+            let opcode = program[test_pc as usize];
+            test_pc += 1;
+            self.execute(opcode);
+        }
     }
 
     fn execute(&mut self, opcode: u8) {
@@ -192,6 +230,20 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.execute(0x6F);
         assert_eq!(cpu.register_l, 0x11);
+    }
+
+    #[test]
+    fn two_loads() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x47, 0x57]);
+        assert_eq!(cpu.register_b, cpu.register_d);
+    }
+
+    #[test]
+    fn loaded_register_not_changed() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x59]);
+        assert_eq!(cpu.register_c, 0x00);
     }
 
     #[test]
