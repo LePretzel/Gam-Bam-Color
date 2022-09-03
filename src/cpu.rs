@@ -87,19 +87,17 @@ impl CPU {
     pub fn load(&mut self, rom_path: &str) -> std::io::Result<()> {
         let program = fs::read(rom_path)?;
         for i in 0..program.len() {
-            self.write(self.program_counter + (i as u16), program[i]);
-            // todo!("Limit rom size");
+            self.write(i as u16, program[i]);
         }
-        todo!("test");
         Ok(())
     }
 
     pub fn run(&mut self) {
-        loop {
+        const ROM_LIMIT: u16 = 0x8000;
+        while self.program_counter < ROM_LIMIT {
             let opcode = self.read(self.program_counter);
             self.program_counter += 1;
             self.execute(opcode);
-            todo!("test");
         }
     }
 
@@ -116,7 +114,7 @@ impl CPU {
         }
 
         let initial_pc = self.program_counter as usize;
-        while (self.program_counter as usize <= initial_pc + program.len()) {
+        while self.program_counter as usize <= initial_pc + program.len() {
             let opcode = self.read(self.program_counter);
             self.program_counter += 1;
             self.execute(opcode);
@@ -152,12 +150,12 @@ impl CPU {
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
         let data = self.memory[address as usize];
-        println!("Read value {:b} from {:x}", data, address);
+        //println!("Read value {:b} from {:x}", data, address);
         data
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        println!("Wrote value {:b} to {:x}", data, address);
+        //println!("Wrote value {:b} to {:x}", data, address);
         self.memory[address as usize] = data;
     }
 
