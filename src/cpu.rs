@@ -68,7 +68,7 @@ impl CPU {
             let opcode: u8 = 0b00000110 | (dest_num << 3);
 
             cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source = cpu.read(cpu.stack_pointer);
+                let source = cpu.read(cpu.program_counter);
                 let dest_option = cpu.get_register(dest_num);
                 if let Some(dest) = dest_option {
                     *dest = source;
@@ -85,7 +85,7 @@ impl CPU {
     }
 
     pub fn load(&mut self, rom_path: &str) -> std::io::Result<()> {
-        let mut program = fs::read(rom_path)?;
+        let program = fs::read(rom_path)?;
         for i in 0..program.len() {
             self.write(self.program_counter + (i as u16), program[i]);
             // todo!("Limit rom size");
@@ -97,9 +97,6 @@ impl CPU {
     pub fn run(&mut self) {
         loop {
             let opcode = self.read(self.program_counter);
-            if opcode != 0 {
-                println!("{:x}", opcode);
-            }
             self.program_counter += 1;
             self.execute(opcode);
             todo!("test");
@@ -114,10 +111,14 @@ impl CPU {
     }
 
     fn run_test(&mut self, program: Vec<u8>) {
-        let mut test_pc: u16 = 0;
-        for _ in 0..program.len() {
-            let opcode = program[test_pc as usize];
-            test_pc += 1;
+        for (i, b) in program.iter().enumerate() {
+            self.write(self.program_counter + i as u16, *b);
+        }
+
+        let initial_pc = self.program_counter as usize;
+        while (self.program_counter as usize <= initial_pc + program.len()) {
+            let opcode = self.read(self.program_counter);
+            self.program_counter += 1;
             self.execute(opcode);
         }
     }
@@ -150,10 +151,13 @@ impl CPU {
 
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
-        self.memory[address as usize]
+        let data = self.memory[address as usize];
+        println!("Read value {:b} from {:x}", data, address);
+        data
     }
 
     fn write(&mut self, address: u16, data: u8) {
+        println!("Wrote value {:b} to {:x}", data, address);
         self.memory[address as usize] = data;
     }
 
@@ -235,6 +239,8 @@ mod tests {
     #[test]
     fn two_loads() {
         let mut cpu = CPU::new();
+        // LD b, a
+        // LD d, a
         cpu.run_test(vec![0x47, 0x57]);
         assert_eq!(cpu.register_b, cpu.register_d);
     }
@@ -242,8 +248,37 @@ mod tests {
     #[test]
     fn loaded_register_not_changed() {
         let mut cpu = CPU::new();
+        // LD e, c
         cpu.run_test(vec![0x59]);
         assert_eq!(cpu.register_c, 0x00);
+    }
+
+    #[test]
+    fn ld_a_immediate_value() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x3E, 0x08]);
+        assert_eq!(cpu.register_a, 0x08);
+    }
+
+    #[test]
+    fn ld_b_immediate_value() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x06, 0xFF]);
+        assert_eq!(cpu.register_b, 0xFF);
+    }
+
+    #[test]
+    fn ld_c_immediate_value() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x0E, 0x12]);
+        assert_eq!(cpu.register_c, 0x12);
+    }
+
+    #[test]
+    fn ld_d_immediate_value() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x16, 0x00]);
+        assert_eq!(cpu.register_d, 0x00);
     }
 
     #[test]
