@@ -65,10 +65,11 @@ impl CPU {
         // LD r, n  (2 M-cycles)
         for i in 0..8 {
             let dest_num = i as u8;
-            let opcode: u8 = 0b00000110 | (dest_num << 3);
+            let opcode = 0b00000110 | (dest_num << 3);
 
             cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
                 let source = cpu.read(cpu.program_counter);
+                cpu.program_counter += 1;
                 let dest_option = cpu.get_register(dest_num);
                 if let Some(dest) = dest_option {
                     *dest = source;
@@ -85,8 +86,12 @@ impl CPU {
     }
 
     pub fn load(&mut self, rom_path: &str) -> std::io::Result<()> {
+        const ROM_LIMIT: u16 = 0x8000;
         let program = fs::read(rom_path)?;
         for i in 0..program.len() {
+            if i >= ROM_LIMIT as usize {
+                break;
+            }
             self.write(i as u16, program[i]);
         }
         Ok(())
@@ -241,6 +246,17 @@ mod tests {
         // LD d, a
         cpu.run_test(vec![0x47, 0x57]);
         assert_eq!(cpu.register_b, cpu.register_d);
+    }
+
+    #[test]
+    fn load_immediate_args_not_used_as_opcodes() {
+        let mut cpu = CPU::new();
+        // LD b, 0x1A (1A is the opcode for LD a, (DE))
+        // LD d, 0xF1
+        cpu.run_test(vec![0x06, 0x1A, 0x16, 0xF1]);
+        assert_eq!(cpu.register_a, 0x11);
+        assert_eq!(cpu.register_b, 0x1A);
+        assert_eq!(cpu.register_d, 0xF1);
     }
 
     #[test]

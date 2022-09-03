@@ -2,5 +2,8 @@ mod cpu;
 mod memory;
 
 fn main() {
-    println!("Hello, world!");
+    let mut cpu = cpu::CPU::new();
+
+    cpu.load("./test_roms/ldrr.gb");
+    cpu.run();
 }
