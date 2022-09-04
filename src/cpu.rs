@@ -77,6 +77,41 @@ impl CPU {
             }));
         }
 
+        // LD r, (HL)  (2 M-cycles)
+        for i in 0..8 {
+            let dest_num = i as u8;
+            let opcode = 0b01000110 | (dest_num << 3);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                let dest_option = cpu.get_register(dest_num);
+                if let Some(dest) = dest_option {
+                    *dest = source;
+                }
+            }));
+        }
+
+        // LD (HL), r  (2 M-cycles)
+        for i in 0..8 {
+            let source_num = i as u8;
+            let opcode = 0b01110000 | source_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source_option = cpu.get_register(source_num);
+                if let Some(source_reg) = source_option {
+                    let source = *source_reg;
+                    cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
+                }
+            }));
+        }
+
+        // LD (HL), n  (3 M-cycles)
+        cpu.instructions[0b00110110] = Some(Rc::new(|cpu: &mut CPU| {
+            let source = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
+        }));
+
         // LD A, (DE)  (2 M-cycles)
         cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
             let source = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
@@ -293,6 +328,33 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0x16, 0x00]);
         assert_eq!(cpu.register_d, 0x00);
+    }
+
+    #[test]
+    fn ld_a_hl() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0b01111110]);
+        assert_eq!(cpu.register_a, 0x00);
+    }
+
+    #[test]
+    fn ld_hl_e() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0b01110011]);
+        assert_eq!(
+            cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+            0x56
+        );
+    }
+
+    #[test]
+    fn ld_hl_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0b00110110, 0x87]);
+        assert_eq!(
+            cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+            0x87
+        );
     }
 
     #[test]
