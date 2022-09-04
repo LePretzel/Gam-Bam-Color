@@ -40,7 +40,7 @@ impl CPU {
             instructions: [INIT_INSTRUCTION; 0xFF + 1],
         };
 
-        // LD instructions
+        // 8-bit LD instructions
         // LD r, r'  (1 M-cycle)
         for i in 0..8 {
             for j in 0..8 {
@@ -218,6 +218,73 @@ impl CPU {
             cpu.register_l = hl as u8
         }));
 
+        // 16-bit LD instructions
+        // LD rr, nn  (3 M-cycles)
+        // combined registers version
+        for i in 0..3 {
+            let dest_num = i as u8;
+            let opcode = 0b00000001 | (dest_num << 4);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source = cpu.read_u16(cpu.program_counter);
+                cpu.program_counter += 2;
+                let dest_option = cpu.get_register_pair(dest_num);
+                if let Some(dest) = dest_option {
+                    *dest.0 = (source >> 8) as u8;
+                    *dest.1 = source as u8;
+                }
+            }));
+        }
+        // stack_pointer version
+        cpu.instructions[0x31] = Some(Rc::new(move |cpu: &mut CPU| {
+            let source = cpu.read_u16(cpu.program_counter);
+            cpu.program_counter += 2;
+            cpu.stack_pointer = source;
+        }));
+
+        // LD nn (SP)  (5 M-cycles)
+        cpu.instructions[0x08] = Some(Rc::new(move |cpu: &mut CPU| {
+            let dest = cpu.read_u16(cpu.program_counter);
+            cpu.program_counter += 2;
+            cpu.write_u16(dest, cpu.stack_pointer);
+        }));
+
+        // LD SP (HL)  (2 M-cycles)
+        cpu.instructions[0xF9] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.stack_pointer = (cpu.register_h as u16) << 8 | cpu.register_l as u16;
+        }));
+
+        // PUSH rr  (4 M-cycles)
+        for i in 0..4 {
+            let source_num = i as u8;
+            let opcode = 0b11000101 | (source_num << 4);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source_option = cpu.get_register_pair(source_num);
+                if let Some((high, low)) = source_option {
+                    let source = CPU::combine_bytes(*high, *low);
+                    cpu.stack_pointer -= 2;
+                    cpu.write_u16(cpu.stack_pointer, source);
+                }
+            }));
+        }
+
+        // POP rr  (3 M-cycles)
+        for i in 0..4 {
+            let dest_num = i as u8;
+            let opcode = 0b11000001 | (dest_num << 4);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source = cpu.read_u16(cpu.stack_pointer);
+                cpu.stack_pointer += 2;
+                let dest_option = cpu.get_register_pair(dest_num);
+                if let Some((high, low)) = dest_option {
+                    *low = source as u8;
+                    *high = (source >> 8) as u8;
+                }
+            }));
+        }
+
         cpu
     }
 
@@ -286,17 +353,27 @@ impl CPU {
             _ => None,
         }
     }
+
+    fn get_register_pair(&mut self, code: u8) -> Option<(&mut u8, &mut u8)> {
+        match code {
+            0 => Some((&mut self.register_b, &mut self.register_c)),
+            1 => Some((&mut self.register_d, &mut self.register_e)),
+            2 => Some((&mut self.register_h, &mut self.register_l)),
+            3 => Some((&mut self.register_a, &mut self.register_f)),
+            _ => None,
+        }
+    }
 }
 
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
         let data = self.memory[address as usize];
-        //println!("Read value {:b} from {:x}", data, address);
+        //println!("Read value {:x} from {:x}", data, address);
         data
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        //println!("Wrote value {:b} to {:x}", data, address);
+        //println!("Wrote value {:x} to {:x}", data, address);
         self.memory[address as usize] = data;
     }
 
@@ -590,5 +667,96 @@ mod tests {
         let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         assert_eq!(val, 0x11);
         assert_eq!(initial - changed, 1);
+    }
+
+    #[test]
+    fn ld_bc_immediate_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x01, 0x08, 0x05]);
+        assert_eq!(cpu.register_b, 0x05);
+        assert_eq!(cpu.register_c, 0x08);
+    }
+
+    #[test]
+    fn ld_de_immediate_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x11, 0x08, 0x05]);
+        assert_eq!(cpu.register_d, 0x05);
+        assert_eq!(cpu.register_e, 0x08);
+    }
+
+    #[test]
+    fn ld_hl_immediate_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x21, 0x08, 0x05]);
+        assert_eq!(cpu.register_h, 0x05);
+        assert_eq!(cpu.register_l, 0x08);
+    }
+
+    #[test]
+    fn ld_sp_immediate_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x31, 0x08, 0x05]);
+        assert_eq!(cpu.stack_pointer, 0x0508);
+    }
+
+    #[test]
+    fn ld_nn_sp_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x08, 0x0F, 0x02]);
+        assert_eq!(cpu.read_u16(0x020f), 0xFFFE);
+    }
+
+    #[test]
+    fn ld_sp_hl_u16() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF9]);
+        assert_eq!(
+            cpu.stack_pointer,
+            CPU::combine_bytes(cpu.register_h, cpu.register_l)
+        );
+    }
+
+    #[test]
+    fn push_bc() {
+        let mut cpu = CPU::new();
+        let initial = cpu.stack_pointer;
+        cpu.run_test(vec![0xC5]);
+        let changed = cpu.stack_pointer;
+        assert_eq!(initial - changed, 2);
+        assert_eq!(cpu.read(cpu.stack_pointer), cpu.register_c);
+    }
+
+    #[test]
+    #[should_panic]
+    fn pop_without_pushing_first() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF1]);
+    }
+
+    #[test]
+    fn push_bc_pop_af() {
+        let mut cpu = CPU::new();
+        let initial = cpu.stack_pointer;
+        cpu.run_test(vec![0xC5, 0xF1]);
+        let changed = cpu.stack_pointer;
+        assert_eq!(initial, changed);
+        assert_eq!(
+            (cpu.register_b, cpu.register_c),
+            (cpu.register_a, cpu.register_f)
+        );
+    }
+
+    #[test]
+    fn multiple_pushes_multiple_pops() {
+        let mut cpu = CPU::new();
+        let initial = cpu.stack_pointer;
+        cpu.run_test(vec![0xC5, 0xD5, 0xE5, 0xC1, 0xC1]);
+        let changed = cpu.stack_pointer;
+        assert_eq!(initial - changed, 2);
+        assert_eq!(
+            (cpu.register_b, cpu.register_c),
+            (cpu.register_d, cpu.register_e)
+        );
     }
 }
