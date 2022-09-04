@@ -112,11 +112,112 @@ impl CPU {
             cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
         }));
 
+        // LD A, (BC)  (2 M-cycles)
+        cpu.instructions[0x0A] = Some(Rc::new(|cpu: &mut CPU| {
+            let source = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
+            cpu.register_a = source;
+        }));
+
         // LD A, (DE)  (2 M-cycles)
         cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
             let source = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
             cpu.register_a = source;
         }));
+
+        // LD (BC), A  (2 M-cycles)
+        cpu.instructions[0x02] = Some(Rc::new(|cpu: &mut CPU| {
+            cpu.write(
+                CPU::combine_bytes(cpu.register_b, cpu.register_b),
+                cpu.register_a,
+            );
+        }));
+
+        // LD (DE), A  (2 M-cycles)
+        cpu.instructions[0x12] = Some(Rc::new(|cpu: &mut CPU| {
+            cpu.write(
+                CPU::combine_bytes(cpu.register_d, cpu.register_e),
+                cpu.register_a,
+            );
+        }));
+
+        // LD A, nn  (4 M-cycles)
+        cpu.instructions[0xFA] = Some(Rc::new(|cpu: &mut CPU| {
+            let low = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let high = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.register_a = cpu.read(CPU::combine_bytes(high, low));
+        }));
+
+        // LD nn, A  (4 M-cycles)
+        cpu.instructions[0xEA] = Some(Rc::new(|cpu: &mut CPU| {
+            let low = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let high = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.write(CPU::combine_bytes(high, low), cpu.register_a);
+        }));
+
+        // LDH A, C  (2 M-cycles)
+        cpu.instructions[0xF2] = Some(Rc::new(|cpu: &mut CPU| {
+            cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
+        }));
+
+        // LDH C, A  (2 M-cycles)
+        cpu.instructions[0xE2] = Some(Rc::new(|cpu: &mut CPU| {
+            cpu.write(CPU::combine_bytes(0xFF, cpu.register_c), cpu.register_a);
+        }));
+
+        // LDH A, n  (3 M-cycles)
+        cpu.instructions[0xF0] = Some(Rc::new(|cpu: &mut CPU| {
+            let low_byte = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, low_byte));
+        }));
+
+        // LDH n, A  (3 M-cycles)
+        cpu.instructions[0xE0] = Some(Rc::new(|cpu: &mut CPU| {
+            let low_byte = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.write(CPU::combine_bytes(0xFF, low_byte), cpu.register_a);
+        }));
+
+        // LDI A (HL)  (2 M-cycles)
+        cpu.instructions[0x2A] = Some(Rc::new(|cpu: &mut CPU| {
+            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            cpu.register_a = cpu.read(hl);
+            hl += 1;
+            cpu.register_h = (hl >> 8) as u8;
+            cpu.register_l = hl as u8
+        }));
+
+        // LDI (HL) A  (2 M-cycles)
+        cpu.instructions[0x22] = Some(Rc::new(|cpu: &mut CPU| {
+            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            cpu.write(hl, cpu.register_a);
+            hl += 1;
+            cpu.register_h = (hl >> 8) as u8;
+            cpu.register_l = hl as u8
+        }));
+
+        // LDD A (HL)  (2 M-cycles)
+        cpu.instructions[0x3A] = Some(Rc::new(|cpu: &mut CPU| {
+            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            cpu.register_a = cpu.read(hl);
+            hl -= 1;
+            cpu.register_h = (hl >> 8) as u8;
+            cpu.register_l = hl as u8
+        }));
+
+        // LDD (HL) A  (2 M-cycles)
+        cpu.instructions[0x32] = Some(Rc::new(|cpu: &mut CPU| {
+            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            cpu.write(hl, cpu.register_a);
+            hl -= 1;
+            cpu.register_h = (hl >> 8) as u8;
+            cpu.register_l = hl as u8
+        }));
+
         cpu
     }
 
@@ -358,10 +459,136 @@ mod tests {
     }
 
     #[test]
+    fn ld_a_bc() {
+        let mut cpu = CPU::new();
+        cpu.execute(0x0A);
+        let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
+        assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
     fn ld_a_de() {
         let mut cpu = CPU::new();
         cpu.execute(0x1A);
         let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
         assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
+    fn ld_bc_a() {
+        let mut cpu = CPU::new();
+        cpu.execute(0x02);
+        let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
+        assert_eq!(val, cpu.register_a);
+    }
+
+    #[test]
+    fn ld_de_a() {
+        let mut cpu = CPU::new();
+        cpu.execute(0x12);
+        let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
+        assert_eq!(val, cpu.register_a);
+    }
+
+    #[test]
+    fn ld_a_nn() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xFA, 0x01, 0x10]);
+        let val = cpu.read(CPU::combine_bytes(0x10, 0x01));
+        assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
+    fn ld_nn_a() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xEA, 0x01, 0x10]);
+        let val = cpu.read(CPU::combine_bytes(0x10, 0x01));
+        assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
+    fn multiple_ld_instructions_with_varying_args() {
+        let mut cpu = CPU::new();
+        // ld a, $3456
+        // ld c, a
+        // ld b, $78
+        cpu.run_test(vec![0xFA, 0x56, 0x34, 0x4B, 0x06, 0x78]);
+        assert_eq!(cpu.register_a, 0x00);
+        assert_eq!(cpu.register_c, 0x56);
+        assert_eq!(cpu.register_b, 0x78)
+    }
+
+    #[test]
+    fn ldh_a_c() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF2]);
+        let val = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
+        assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
+    fn ldh_c_a() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xE2]);
+        let val = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
+        assert_eq!(val, 0x11);
+    }
+
+    #[test]
+    fn ldh_a_n() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF0, 0x06]);
+        let val = cpu.read(CPU::combine_bytes(0xFF, 0x06));
+        assert_eq!(cpu.register_a, val);
+    }
+
+    #[test]
+    fn ldh_n_a() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xE0, 0x0A]);
+        let val = cpu.read(CPU::combine_bytes(0xFF, 0x0A));
+        assert_eq!(val, 0x11);
+    }
+
+    #[test]
+    fn ldi_a_hl() {
+        let mut cpu = CPU::new();
+        let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.run_test(vec![0x2A]);
+        let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(changed - initial, 1);
+    }
+
+    #[test]
+    fn ldi_hl_a() {
+        let mut cpu = CPU::new();
+        let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.run_test(vec![0x22]);
+        let val = cpu.read(initial);
+        let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        assert_eq!(val, 0x11);
+        assert_eq!(changed - initial, 1);
+    }
+
+    #[test]
+    fn ldd_a_hl() {
+        let mut cpu = CPU::new();
+        let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.run_test(vec![0x3A]);
+        let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(initial - changed, 1);
+    }
+
+    #[test]
+    fn ldd_hl_a() {
+        let mut cpu = CPU::new();
+        let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.run_test(vec![0x32]);
+        let val = cpu.read(initial);
+        let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        assert_eq!(val, 0x11);
+        assert_eq!(initial - changed, 1);
     }
 }
