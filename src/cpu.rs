@@ -322,6 +322,48 @@ impl CPU {
             cpu.register_a = sum.0;
         }));
 
+        // ADC A, r  (1 M-cylcle)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10001000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let reg_value = *reg;
+                    let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+                    cpu.update_flags_add(cpu.register_a, reg_value + carry_bit);
+                    let mut sum = Wrapping(reg_value);
+                    sum += cpu.register_a;
+                    sum += carry_bit;
+                    cpu.register_a = sum.0;
+                }
+            }));
+        }
+
+        // ADC A, n  (2 M-cycle)
+        cpu.instructions[0xCE] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
+            let mut sum = Wrapping(cpu.register_a);
+            sum += arg;
+            sum += carry_bit;
+            cpu.register_a = sum.0;
+        }));
+
+        // ADC A, (HL)  (2 M-cycle)
+        cpu.instructions[0x8E] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
+            let mut sum = Wrapping(cpu.register_a);
+            sum += arg;
+            sum += carry_bit;
+            cpu.register_a = sum.0;
+        }));
+
         cpu
     }
 
@@ -825,28 +867,28 @@ mod tests {
     }
 
     #[test]
-    fn basic_add_b() {
+    fn add_basic_b() {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0x80]);
         assert_eq!(cpu.register_a, 0x11);
     }
 
     #[test]
-    fn basic_add_l() {
+    fn add_basic_l() {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0x85]);
         assert_eq!(cpu.register_a, 0x1E);
     }
 
     #[test]
-    fn basic_add_immediate() {
+    fn add_basic_immediate() {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0xC6, 0x12]);
         assert_eq!(cpu.register_a, 0x23);
     }
 
     #[test]
-    fn basic_add_hl() {
+    fn add_basic_hl() {
         let mut cpu = CPU::new();
         // ld hl, $02
         // add a, hl
@@ -927,5 +969,48 @@ mod tests {
         cpu.run_test(vec![0xC6, 0x01]);
         let subtraction_bit = cpu.register_f & 0b01000000;
         assert_eq!(subtraction_bit, 0);
+    }
+
+    #[test]
+    fn add_multiple_times_and_flags_reflect_most_recent() {
+        let mut cpu = CPU::new();
+        // Add a, $FF (overflow flag will be 1 at this point: same as prior test)
+        // Add a, $01 (overflow flag should be 0 now)
+        cpu.run_test(vec![0xC6, 0xFF, 0xC6, 0x01]);
+        let overflow_bit = cpu.register_f & 0b00010000;
+        assert_eq!(overflow_bit, 0);
+    }
+
+    #[test]
+    fn adc_e_flag_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x8B]);
+        assert_eq!(cpu.register_a, 0x67);
+    }
+
+    #[test]
+    fn adc_e_flag_is_one() {
+        let mut cpu = CPU::new();
+        cpu.register_f = cpu.register_f | 0b00010000;
+        cpu.run_test(vec![0x8B]);
+        assert_eq!(cpu.register_a, 0x68);
+    }
+
+    #[test]
+    fn adc_n() {
+        let mut cpu = CPU::new();
+        cpu.register_f = cpu.register_f | 0b00010000;
+        cpu.run_test(vec![0xCE, 0x02]);
+        assert_eq!(cpu.register_a, 0x14);
+    }
+
+    #[test]
+    fn adc_hl() {
+        let mut cpu = CPU::new();
+        // ld hl, $02
+        // add a, hl
+        cpu.register_f = cpu.register_f | 0b00010000;
+        cpu.run_test(vec![0x36, 0x02, 0x8E]);
+        assert_eq!(cpu.register_a, 0x14);
     }
 }
