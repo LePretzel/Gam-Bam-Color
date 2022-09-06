@@ -1,4 +1,4 @@
-use std::{fs, rc::Rc};
+use std::{fs, num::Wrapping, rc::Rc};
 
 use crate::memory::Memory;
 
@@ -285,6 +285,43 @@ impl CPU {
             }));
         }
 
+        // 8-bit arithmetic/logic instructions
+        // ADD A, r  (1 M-cylcle)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10000000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let reg_value = *reg;
+                    cpu.update_flags_add(cpu.register_a, reg_value);
+                    let mut sum = Wrapping(reg_value);
+                    sum += cpu.register_a;
+                    cpu.register_a = sum.0;
+                }
+            }));
+        }
+
+        // ADD A, n  (2 M-cycle)
+        cpu.instructions[0xC6] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.update_flags_add(cpu.register_a, arg);
+            let mut sum = Wrapping(cpu.register_a);
+            sum += arg;
+            cpu.register_a = sum.0;
+        }));
+
+        // ADD A, (HL)  (2 M-cycle)
+        cpu.instructions[0x86] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            cpu.update_flags_add(cpu.register_a, arg);
+            let mut sum = Wrapping(cpu.register_a);
+            sum += arg;
+            cpu.register_a = sum.0;
+        }));
+
         cpu
     }
 
@@ -361,6 +398,33 @@ impl CPU {
             2 => Some((&mut self.register_h, &mut self.register_l)),
             3 => Some((&mut self.register_a, &mut self.register_f)),
             _ => None,
+        }
+    }
+
+    fn update_flags_add(&mut self, op1: u8, op2: u8) {
+        self.register_f = self.register_f & 0b10111111;
+
+        let mut sum = Wrapping(op1);
+        sum += op2;
+        let zero = sum.0 == 0;
+        if zero {
+            self.register_f = self.register_f | 0b10000000;
+        } else {
+            self.register_f = self.register_f & 0b01111111;
+        }
+
+        let overflow = op1 as u16 + op2 as u16 > 255;
+        if overflow {
+            self.register_f = self.register_f | 0b00010000;
+        } else {
+            self.register_f = self.register_f & 0b11101111;
+        }
+
+        let half_carry = op1 & op2 & 0b00001000 > 0;
+        if half_carry {
+            self.register_f = self.register_f | 0b00100000;
+        } else {
+            self.register_f = self.register_f & 0b11011111;
         }
     }
 }
@@ -758,5 +822,110 @@ mod tests {
             (cpu.register_b, cpu.register_c),
             (cpu.register_d, cpu.register_e)
         );
+    }
+
+    #[test]
+    fn basic_add_b() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x80]);
+        assert_eq!(cpu.register_a, 0x11);
+    }
+
+    #[test]
+    fn basic_add_l() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x85]);
+        assert_eq!(cpu.register_a, 0x1E);
+    }
+
+    #[test]
+    fn basic_add_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0x12]);
+        assert_eq!(cpu.register_a, 0x23);
+    }
+
+    #[test]
+    fn basic_add_hl() {
+        let mut cpu = CPU::new();
+        // ld hl, $02
+        // add a, hl
+        cpu.run_test(vec![0x36, 0x02, 0x86]);
+        assert_eq!(cpu.register_a, 0x13);
+    }
+
+    #[test]
+    fn add_a_has_correct_value_after_overflow() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0xFF]);
+        assert_eq!(cpu.register_a, 0x10);
+    }
+
+    #[test]
+    fn add_zero_flag_is_one() {
+        let mut cpu = CPU::new();
+        // ld a, 0
+        // add a, 0
+        cpu.run_test(vec![0x3E, 0x00, 0xC6, 0x00]);
+        let zero_bit = cpu.register_f & 0b10000000;
+        assert_eq!(zero_bit, 128);
+    }
+
+    #[test]
+    fn add_zero_flag_is_one_with_overflow() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0xEE]);
+        let zero_bit = cpu.register_f & 0b00010000;
+        assert_eq!(zero_bit, 0);
+    }
+
+    #[test]
+    fn add_zero_flag_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0x11]);
+        let zero_bit = cpu.register_f & 0b10000000;
+        assert_eq!(zero_bit, 0);
+    }
+
+    #[test]
+    fn add_carry_flag_correct_no_overflow() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0x01]);
+        let overflow_bit = cpu.register_f & 0b00010000;
+        assert_eq!(overflow_bit, 0);
+    }
+
+    #[test]
+    fn add_carry_flag_correct_after_overflow() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0xFF]);
+        let overflow_bit = cpu.register_f & 0b00010000;
+        assert_eq!(overflow_bit, 16);
+    }
+
+    #[test]
+    fn add_half_carry_flag_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0x01]);
+        let half_carry_bit = cpu.register_f & 0b00100000;
+        assert_eq!(half_carry_bit, 0);
+    }
+
+    #[test]
+    fn add_half_carry_flag_is_one() {
+        let mut cpu = CPU::new();
+        // ld a, 08b
+        // add a,, 08b
+        cpu.run_test(vec![0x3E, 0x08, 0xC6, 0x08]);
+        let half_carry_bit = cpu.register_f & 0b00100000;
+        assert_eq!(half_carry_bit, 32);
+    }
+
+    #[test]
+    fn add_subtraction_flag_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC6, 0x01]);
+        let subtraction_bit = cpu.register_f & 0b01000000;
+        assert_eq!(subtraction_bit, 0);
     }
 }
