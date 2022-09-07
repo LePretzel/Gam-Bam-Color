@@ -532,6 +532,33 @@ impl CPU {
             cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
         }));
 
+        // CP A, r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10111000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let reg_value = CPU::negate(*reg);
+                    cpu.update_flags_sub(cpu.register_a, reg_value);
+                }
+            }));
+        }
+
+        // CP A, n  (2 M-cycles)
+        cpu.instructions[0xFE] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = CPU::negate(cpu.read(cpu.program_counter));
+            cpu.program_counter += 1;
+            cpu.update_flags_sub(cpu.register_a, arg);
+        }));
+
+        // CP A, (HL)  (2 M-cycles)
+        cpu.instructions[0xBE] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+            cpu.update_flags_sub(cpu.register_a, arg);
+        }));
+
         cpu
     }
 
@@ -657,7 +684,9 @@ impl CPU {
             self.register_f = self.register_f & 0b11101111;
         }
 
-        let half_carry = (op1 & 0b00001000) >> 3 == 0 && (CPU::negate(op2) & 0b00001000) >> 3 == 1;
+        let op1_low_nib = op1 & 0b00001111;
+        let op2_low_nib = CPU::negate(op2) & 0b00001111;
+        let half_carry = op2_low_nib > op1_low_nib;
         if half_carry {
             self.register_f = self.register_f | 0b00100000;
         } else {
@@ -1448,5 +1477,30 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0xB6]);
         assert_eq!(cpu.register_a, 0b00010001);
+    }
+
+    #[test]
+    fn cp_b() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0x10;
+        cpu.run_test(vec![0xB8]);
+        assert_eq!(cpu.register_f, 0b01000000);
+    }
+
+    #[test]
+    fn cp_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xFE, 0x08]);
+        let half_carry_bit = cpu.register_f & 0b00100000;
+        assert_eq!(cpu.register_f, 0b01100000);
+    }
+
+    #[test]
+    fn cp_hl() {
+        let mut cpu = CPU::new();
+        // ld hl, $02
+        // cp a, hl
+        cpu.run_test(vec![0x36, 0x02, 0xBE]);
+        assert_eq!(cpu.register_f, 0b01100000);
     }
 }
