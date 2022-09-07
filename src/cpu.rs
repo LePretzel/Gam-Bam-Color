@@ -140,7 +140,7 @@ impl CPU {
             );
         }));
 
-        // LD A, nn  (4 M-cycles)
+        // LD A, (nn)  (4 M-cycles)
         cpu.instructions[0xFA] = Some(Rc::new(|cpu: &mut CPU| {
             let low = cpu.read(cpu.program_counter);
             cpu.program_counter += 1;
@@ -149,7 +149,7 @@ impl CPU {
             cpu.register_a = cpu.read(CPU::combine_bytes(high, low));
         }));
 
-        // LD nn, A  (4 M-cycles)
+        // LD (nn), A  (4 M-cycles)
         cpu.instructions[0xEA] = Some(Rc::new(|cpu: &mut CPU| {
             let low = cpu.read(cpu.program_counter);
             cpu.program_counter += 1;
@@ -242,14 +242,14 @@ impl CPU {
             cpu.stack_pointer = source;
         }));
 
-        // LD nn (SP)  (5 M-cycles)
+        // LD nn SP  (5 M-cycles)
         cpu.instructions[0x08] = Some(Rc::new(move |cpu: &mut CPU| {
             let dest = cpu.read_u16(cpu.program_counter);
             cpu.program_counter += 2;
             cpu.write_u16(dest, cpu.stack_pointer);
         }));
 
-        // LD SP (HL)  (2 M-cycles)
+        // LD SP HL  (2 M-cycles)
         cpu.instructions[0xF9] = Some(Rc::new(move |cpu: &mut CPU| {
             cpu.stack_pointer = (cpu.register_h as u16) << 8 | cpu.register_l as u16;
         }));
@@ -1122,8 +1122,8 @@ mod tests {
     #[test]
     fn add_basic_hl() {
         let mut cpu = CPU::new();
-        // ld hl, $02
-        // add a, hl
+        // ld (hl), $02
+        // add a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0x86]);
         assert_eq!(cpu.register_a, 0x13);
     }
@@ -1189,7 +1189,7 @@ mod tests {
     fn add_half_carry_flag_is_one() {
         let mut cpu = CPU::new();
         // ld a, 08b
-        // add a,, 08b
+        // add a, 08b
         cpu.run_test(vec![0x3E, 0x08, 0xC6, 0x08]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 32);
@@ -1239,8 +1239,8 @@ mod tests {
     #[test]
     fn adc_hl() {
         let mut cpu = CPU::new();
-        // ld hl, $02
-        // add a, hl
+        // ld (hl), $02
+        // add a, (hl)
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0x36, 0x02, 0x8E]);
         assert_eq!(cpu.register_a, 0x14);
@@ -1271,8 +1271,8 @@ mod tests {
     #[test]
     fn sub_basic_hl() {
         let mut cpu = CPU::new();
-        // ld hl, $02
-        // sub a, hl
+        // ld (hl), $02
+        // sub a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0x96]);
         assert_eq!(cpu.register_a, 0x0F);
     }
@@ -1374,8 +1374,8 @@ mod tests {
     #[test]
     fn sbc_hl() {
         let mut cpu = CPU::new();
-        // ld hl, $02
-        // sbc a, hl
+        // ld (hl), $02
+        // sbc a, (hl)
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0x36, 0x02, 0x9E]);
         assert_eq!(cpu.register_a, 0x11 - 3);
@@ -1498,8 +1498,8 @@ mod tests {
     #[test]
     fn cp_hl() {
         let mut cpu = CPU::new();
-        // ld hl, $02
-        // cp a, hl
+        // ld (hl), $02
+        // cp a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0xBE]);
         assert_eq!(cpu.register_f, 0b01100000);
     }
