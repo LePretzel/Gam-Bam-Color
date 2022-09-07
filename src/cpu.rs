@@ -442,6 +442,96 @@ impl CPU {
             cpu.register_a = sum.0;
         }));
 
+        // AND A, r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10100000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let register_value = *reg;
+                    cpu.register_a = cpu.register_a & register_value;
+                    cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+                }
+            }));
+        }
+
+        // AND A, n  (2 M-cycles)
+        cpu.instructions[0xE6] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.register_a = cpu.register_a & arg;
+            cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+        }));
+
+        // AND A, (HL)  (2 M-cycles)
+        cpu.instructions[0xA6] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            cpu.register_a = cpu.register_a & arg;
+            cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+        }));
+
+        // XOR A, r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10101000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let register_value = *reg;
+                    cpu.register_a = cpu.register_a ^ register_value;
+                    cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+                }
+            }));
+        }
+
+        // XOR A, n  (2 M-cycles)
+        cpu.instructions[0xEE] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.register_a = cpu.register_a ^ arg;
+            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+        }));
+
+        // XOR A, (HL)  (2 M-cycles)
+        cpu.instructions[0xAE] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            cpu.register_a = cpu.register_a ^ arg;
+            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+        }));
+
+        // OR A, r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b10110000 | register_num;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let register_value = *reg;
+                    cpu.register_a = cpu.register_a | register_value;
+                    cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+                }
+            }));
+        }
+
+        // OR A, n  (2 M-cycles)
+        cpu.instructions[0xF6] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            cpu.register_a = cpu.register_a | arg;
+            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+        }));
+
+        // OR A, (HL)  (2 M-cycles)
+        cpu.instructions[0xB6] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            cpu.register_a = cpu.register_a | arg;
+            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+        }));
+
         cpu
     }
 
@@ -1260,5 +1350,103 @@ mod tests {
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0x36, 0x02, 0x9E]);
         assert_eq!(cpu.register_a, 0x11 - 3);
+    }
+
+    #[test]
+    fn and_b() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xA0]);
+        assert_eq!(cpu.register_a, 0)
+    }
+
+    #[test]
+    fn and_b_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xA0]);
+        assert_eq!(cpu.register_f, 0b10100000);
+    }
+
+    #[test]
+    fn and_a_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xA7]);
+        assert_eq!(cpu.register_f, 0b00100000);
+    }
+
+    #[test]
+    fn and_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xE6, 0b11110000]);
+        assert_eq!(cpu.register_a, 0b00010000);
+    }
+
+    #[test]
+    fn and_hl() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xE6]);
+        assert_eq!(cpu.register_a, 0);
+    }
+
+    #[test]
+    fn xor_b() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xA8]);
+        assert_eq!(cpu.register_a, 0b00010001)
+    }
+
+    #[test]
+    fn xor_b_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xA8]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn xor_a_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xAF]);
+        assert_eq!(cpu.register_f, 0b10000000);
+    }
+
+    #[test]
+    fn xor_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xEE, 0b11111111]);
+        assert_eq!(cpu.register_a, 0b11101110);
+    }
+
+    #[test]
+    fn xor_hl() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xAE]);
+        assert_eq!(cpu.register_a, 0b00010001);
+    }
+
+    #[test]
+    fn or_b() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xB0]);
+        assert_eq!(cpu.register_a, 0b00010001)
+    }
+
+    #[test]
+    fn or_b_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xB0]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn or_immediate() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF6, 0b11101110]);
+        assert_eq!(cpu.register_a, 0b11111111);
+    }
+
+    #[test]
+    fn or_hl() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xB6]);
+        assert_eq!(cpu.register_a, 0b00010001);
     }
 }
