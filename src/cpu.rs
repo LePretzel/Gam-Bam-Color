@@ -657,7 +657,9 @@ impl CPU {
             self.register_f = self.register_f & 0b11101111;
         }
 
-        let half_carry = op1 & op2 & 0b00001000 > 0;
+        let op1_low_nib = op1 & 0b00001111;
+        let op2_low_nib = op2 & 0b00001111;
+        let half_carry = op1_low_nib + op2_low_nib > 0xF;
         if half_carry {
             self.register_f = self.register_f | 0b00100000;
         } else {
@@ -1188,9 +1190,19 @@ mod tests {
     #[test]
     fn add_half_carry_flag_is_one() {
         let mut cpu = CPU::new();
-        // ld a, 08b
-        // add a, 08b
+        // ld a, $08
+        // add a, $08
         cpu.run_test(vec![0x3E, 0x08, 0xC6, 0x08]);
+        let half_carry_bit = cpu.register_f & 0b00100000;
+        assert_eq!(half_carry_bit, 32);
+    }
+
+    #[test]
+    fn add_half_carry_flag_is_one_carried_from_bit_1() {
+        let mut cpu = CPU::new();
+        // ld a, $0A
+        // add a, $07
+        cpu.run_test(vec![0x3E, 0x0A, 0xC6, 0x07]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 32);
     }
@@ -1336,6 +1348,14 @@ mod tests {
     fn sub_half_carry_flag_is_one() {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0xD6, 0x08]);
+        let half_carry_bit = cpu.register_f & 0b00100000;
+        assert_eq!(half_carry_bit, 32);
+    }
+
+    #[test]
+    fn sub_half_carry_flag_is_one_borrow_across_multiple_bits() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xD6, 0x02]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 32);
     }
