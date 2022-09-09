@@ -608,7 +608,7 @@ impl CPU {
             }));
         }
 
-        // DEC (HL)  (3 M-cycles)
+        // DEC  (HL)  (3 M-cycles)
         cpu.instructions[0x35] = Some(Rc::new(move |cpu: &mut CPU| {
             let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
             let initial_carry_bit = 0b00010000 & cpu.register_f;
@@ -617,6 +617,29 @@ impl CPU {
             cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
             cpu.update_flags_sub(cpu.register_a, 1);
             cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+        }));
+
+        // DAA  (1 M-cycles)
+        cpu.instructions[0x27] = Some(Rc::new(move |cpu: &mut CPU| {
+            let low = 0b00001111 & cpu.register_a;
+            let half_carry_flag = (0b00100000 & cpu.register_f) >> 5;
+            let mut sum = Wrapping(cpu.register_a);
+            if low > 9 || half_carry_flag == 1 {
+                sum += 0x06;
+            }
+            let high = sum >> 4;
+            let carry_flag = (0b00010000 & cpu.register_f) >> 4;
+            cpu.register_f = cpu.register_f & 0b11001111;
+            if high.0 > 9 || carry_flag == 1 {
+                sum += 0x60;
+                cpu.register_f = cpu.register_f | 0b00010000;
+            }
+            cpu.register_a = sum.0;
+            if cpu.register_a == 0 {
+                cpu.register_f = cpu.register_f | 0b10000000;
+            } else {
+                cpu.register_f = cpu.register_f & 0b01111111;
+            }
         }));
 
         cpu
@@ -1658,5 +1681,41 @@ mod tests {
         cpu.run_test(vec![0x05]);
         let carry_bit = 0b00010000 & cpu.register_f;
         assert_eq!(carry_bit, initial_carry_bit);
+    }
+
+    #[test]
+    fn daa_both_digits_within_limit() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0x99;
+        cpu.run_test(vec![0x27]);
+        assert_eq!(cpu.register_a, 0x99);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn daa_lsb_outside_limit() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0x0A;
+        cpu.run_test(vec![0x27]);
+        assert_eq!(cpu.register_a, 0x10);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn daa_msb_outside_limit() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0xA0;
+        cpu.run_test(vec![0x27]);
+        assert_eq!(cpu.register_a, 0x00);
+        assert_eq!(cpu.register_f, 0b10010000);
+    }
+
+    #[test]
+    fn daa_overflow_to_zero() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0x9A;
+        cpu.run_test(vec![0x27]);
+        assert_eq!(cpu.register_a, 0x00);
+        assert_eq!(cpu.register_f, 0b10010000);
     }
 }
