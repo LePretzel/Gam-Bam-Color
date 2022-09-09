@@ -559,6 +559,66 @@ impl CPU {
             cpu.update_flags_sub(cpu.register_a, arg);
         }));
 
+        // INC r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b00000100 | register_num << 3;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let initial_carry_bit = 0b00010000 & cpu.register_f;
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let reg_value = *reg;
+                    let mut sum = Wrapping(reg_value);
+                    sum += 1;
+                    *reg = sum.0;
+                    cpu.update_flags_add(reg_value, 1);
+                    cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+                }
+            }));
+        }
+
+        // INC (HL)  (3 M-cycles)
+        cpu.instructions[0x34] = Some(Rc::new(move |cpu: &mut CPU| {
+            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let initial_carry_bit = 0b00010000 & cpu.register_f;
+            let mut sum = Wrapping(initial_value);
+            sum += 1;
+            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
+            cpu.update_flags_add(cpu.register_a, 1);
+            cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+        }));
+
+        // DEC r  (1 M-cycles)
+        for i in 0..8 {
+            let register_num = i as u8;
+            let opcode = 0b00000101 | register_num << 3;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let initial_carry_bit = 0b00010000 & cpu.register_f;
+                let register_option = cpu.get_register(register_num);
+                if let Some(reg) = register_option {
+                    let reg_value = *reg;
+                    let mut sum = Wrapping(reg_value);
+                    sum -= 1;
+                    *reg = sum.0;
+                    cpu.update_flags_sub(cpu.register_a, 1);
+                    cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+                }
+            }));
+        }
+
+        // DEC (HL)  (3 M-cycles)
+        cpu.instructions[0x35] = Some(Rc::new(move |cpu: &mut CPU| {
+            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let initial_carry_bit = 0b00010000 & cpu.register_f;
+            let mut sum = Wrapping(initial_value);
+            sum -= 1;
+            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
+            cpu.update_flags_sub(cpu.register_a, 1);
+            cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+        }));
+
         cpu
     }
 
@@ -1522,5 +1582,81 @@ mod tests {
         // cp a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0xBE]);
         assert_eq!(cpu.register_f, 0b01100000);
+    }
+
+    #[test]
+    fn inc_b_basic() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x04]);
+        assert_eq!(cpu.register_b, 0x01);
+    }
+
+    #[test]
+    fn inc_b_overflow() {
+        let mut cpu = CPU::new();
+        // ld b 0xFF
+        // inc b
+        cpu.run_test(vec![0x06, 0xFF, 0x04]);
+        assert_eq!(cpu.register_b, 0x00);
+    }
+
+    #[test]
+    fn inc_hl() {
+        let mut cpu = CPU::new();
+        // ld (hl) 0x02
+        // inc (hl)
+        cpu.run_test(vec![0x36, 0x02, 0x34]);
+        assert_eq!(
+            cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+            0x03
+        );
+    }
+
+    #[test]
+    fn inc_doesnt_change_carry_flag() {
+        let mut cpu = CPU::new();
+        // ld b 0xFF
+        // inc b
+        let initial_carry_bit = 0b00010000 & cpu.register_f;
+        cpu.run_test(vec![0x06, 0xFF, 0x04]);
+        let carry_bit = 0b00010000 & cpu.register_f;
+        assert_eq!(carry_bit, initial_carry_bit);
+    }
+
+    #[test]
+    fn dec_b_basic() {
+        let mut cpu = CPU::new();
+        // ld b 0xFF
+        // dec b
+        cpu.run_test(vec![0x06, 0xFF, 0x05]);
+        assert_eq!(cpu.register_b, 0xFE);
+    }
+
+    #[test]
+    fn dec_b_underflow() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x05]);
+        assert_eq!(cpu.register_b, 0xFF);
+    }
+
+    #[test]
+    fn dec_hl() {
+        let mut cpu = CPU::new();
+        // ld (hl) 0x02
+        // dec (hl)
+        cpu.run_test(vec![0x36, 0x02, 0x35]);
+        assert_eq!(
+            cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+            0x01
+        );
+    }
+
+    #[test]
+    fn dec_doesnt_change_carry_flag() {
+        let mut cpu = CPU::new();
+        let initial_carry_bit = 0b00010000 & cpu.register_f;
+        cpu.run_test(vec![0x05]);
+        let carry_bit = 0b00010000 & cpu.register_f;
+        assert_eq!(carry_bit, initial_carry_bit);
     }
 }
