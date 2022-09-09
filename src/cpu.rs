@@ -642,6 +642,12 @@ impl CPU {
             }
         }));
 
+        // CPL  (1 M-cycles)
+        cpu.instructions[0x2F] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.register_a = cpu.register_a ^ 0xFF;
+            cpu.register_f = cpu.register_f | 0b01100000;
+        }));
+
         cpu
     }
 
@@ -1717,5 +1723,19 @@ mod tests {
         cpu.run_test(vec![0x27]);
         assert_eq!(cpu.register_a, 0x00);
         assert_eq!(cpu.register_f, 0b10010000);
+    }
+
+    #[test]
+    fn cpl_basic() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x2F]);
+        assert_eq!(cpu.register_a, 0b11101110);
+    }
+
+    #[test]
+    fn cpl_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x2F]);
+        assert_eq!(cpu.register_f, 0b11100000);
     }
 }
