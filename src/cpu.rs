@@ -648,6 +648,109 @@ impl CPU {
             cpu.register_f = cpu.register_f | 0b01100000;
         }));
 
+        // 16-bit arithmetic/logic instructions
+        // ADD Hl, rr  (2 M-cycles)
+        // Combined registers version
+        for i in 0..3 {
+            let register_num = i as u8;
+            let opcode = 0b00001001 | (register_num << 4);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register_pair(register_num);
+                if let Some((high_reg, low_reg)) = register_option {
+                    let (high_value, low_value) = (*high_reg, *low_reg);
+                    cpu.register_f = cpu.register_f & 0b10111111;
+                    let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
+                    sum += CPU::combine_bytes(high_value, low_value);
+                    cpu.register_h = (sum.0 >> 8) as u8;
+                    cpu.register_l = sum.0 as u8;
+                }
+            }));
+        }
+        // Stack pointer version
+        cpu.instructions[0x39] = Some(Rc::new(move |cpu: &mut CPU| {
+            let high_value = (cpu.stack_pointer >> 8) as u8;
+            let low_value = cpu.stack_pointer as u8;
+            cpu.register_f = cpu.register_f & 0b10111111;
+            let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
+            sum += CPU::combine_bytes(high_value, low_value);
+            cpu.register_h = (sum.0 >> 8) as u8;
+            cpu.register_l = sum.0 as u8;
+        }));
+
+        // INC rr  (2 M-cycles)
+        // Combined registers_version
+        for i in 0..3 {
+            let register_num = i as u8;
+            let opcode = 0b00000011 | register_num << 4;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register_pair(register_num);
+                if let Some((high_reg, low_reg)) = register_option {
+                    let (high_value, low_value) = (*high_reg, *low_reg);
+                    let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
+                    sum += 1;
+                    *high_reg = (sum.0 >> 8) as u8;
+                    *low_reg = sum.0 as u8;
+                }
+            }));
+        }
+        // Stack pointer version
+        cpu.instructions[0x33 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let mut sum = Wrapping(cpu.stack_pointer);
+            sum += 1;
+            cpu.stack_pointer = sum.0;
+        }));
+
+        // DEC rr  (2 M-cycles)
+        // Combined registers_version
+        for i in 0..3 {
+            let register_num = i as u8;
+            let opcode = 0b00001011 | register_num << 4;
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let register_option = cpu.get_register_pair(register_num);
+                if let Some((high_reg, low_reg)) = register_option {
+                    let (high_value, low_value) = (*high_reg, *low_reg);
+                    let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
+                    sum -= 1;
+                    *high_reg = (sum.0 >> 8) as u8;
+                    *low_reg = sum.0 as u8;
+                }
+            }));
+        }
+        // Stack pointer version
+        cpu.instructions[0x3B as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let mut sum = Wrapping(cpu.stack_pointer);
+            sum -= 1;
+            cpu.stack_pointer = sum.0;
+        }));
+
+        // ADD SP, dd  (4 M-cycles)
+        cpu.instructions[0xE8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let mut sum = Wrapping(cpu.stack_pointer);
+            sum += arg as u16;
+            cpu.stack_pointer = sum.0;
+            cpu.update_flags_add(cpu.program_counter as u8, arg);
+            cpu.register_f = cpu.register_f & 0b00111111;
+        }));
+
+        // LD HL, SP + dd  (3 M-cycles)
+        cpu.instructions[0xF8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let mut sum = Wrapping(cpu.stack_pointer);
+            sum += arg as u16;
+            cpu.register_h = (sum.0 >> 8) as u8;
+            cpu.register_l = sum.0 as u8;
+            cpu.update_flags_add(cpu.program_counter as u8, arg);
+            cpu.register_f = cpu.register_f & 0b00111111;
+        }));
+
         cpu
     }
 
@@ -778,6 +881,24 @@ impl CPU {
         let op1_low_nib = op1 & 0b00001111;
         let op2_low_nib = CPU::negate(op2) & 0b00001111;
         let half_carry = op2_low_nib > op1_low_nib;
+        if half_carry {
+            self.register_f = self.register_f | 0b00100000;
+        } else {
+            self.register_f = self.register_f & 0b11011111;
+        }
+    }
+
+    fn update_hc_flags_add_u16(&mut self, op1: u16, op2: u16) {
+        let overflow = u16::MAX - op1 < op2;
+        if overflow {
+            self.register_f = self.register_f | 0b00010000;
+        } else {
+            self.register_f = self.register_f & 0b11101111;
+        }
+
+        let op1_low = op1 & 0x0FFF;
+        let op2_low = op2 & 0x0FFF;
+        let half_carry = op1_low + op2_low > 0x0FFF;
         if half_carry {
             self.register_f = self.register_f | 0b00100000;
         } else {
@@ -1737,5 +1858,85 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0x2F]);
         assert_eq!(cpu.register_f, 0b11100000);
+    }
+
+    #[test]
+    fn add_hl_bc() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x09]);
+        assert_eq!((cpu.register_h, cpu.register_l), (0x00, 0x0D));
+    }
+
+    #[test]
+    fn add_hl_sp() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x39]);
+        assert_eq!((cpu.register_h, cpu.register_l), (0x00, 0x0B));
+    }
+
+    #[test]
+    fn add_hl_sp_flags_are_correct() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x39]);
+        assert_eq!(cpu.register_f, 0b10110000);
+    }
+
+    #[test]
+    fn inc_bc() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x03]);
+        assert_eq!((cpu.register_b, cpu.register_c), (0x00, 0x01));
+    }
+
+    #[test]
+    fn inc_sp() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x33]);
+        assert_eq!(cpu.stack_pointer, 0xFFFF);
+    }
+
+    #[test]
+    fn inc_doesnt_change_flags() {
+        let mut cpu = CPU::new();
+        let initial_flags = cpu.register_f;
+        cpu.run_test(vec![0x33]);
+        assert_eq!(cpu.register_f, initial_flags);
+    }
+
+    #[test]
+    fn dec_bc() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x0B]);
+        assert_eq!((cpu.register_b, cpu.register_c), (0xFF, 0xFF));
+    }
+
+    #[test]
+    fn dec_sp() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x3B]);
+        assert_eq!(cpu.stack_pointer, 0xFFFD);
+    }
+
+    #[test]
+    fn dec_doesnt_change_flags() {
+        let mut cpu = CPU::new();
+        let initial_flags = cpu.register_f;
+        cpu.run_test(vec![0x0B]);
+        assert_eq!(cpu.register_f, initial_flags);
+    }
+
+    #[test]
+    fn add_sp_dd() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xE8, 0xF0]);
+        assert_eq!(cpu.stack_pointer, 0x00EE);
+    }
+
+    #[test]
+    fn ld_hl_sp_dd() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xF8, 0xF0]);
+        assert_eq!(CPU::combine_bytes(cpu.register_h, cpu.register_l), 0x00EE);
+        assert_eq!(cpu.stack_pointer, 0xFFFE);
     }
 }
