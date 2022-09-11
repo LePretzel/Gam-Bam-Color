@@ -751,6 +751,37 @@ impl CPU {
             cpu.register_f = cpu.register_f & 0b00111111;
         }));
 
+        // Rotate and shift instructions1
+        // RLCA  (1 M-cycles)
+        cpu.instructions[0x07 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let bit_seven = (cpu.register_a & 0b10000000) >> 7;
+            cpu.register_f = (cpu.register_f & 0b00000000) | bit_seven << 4;
+            cpu.register_a = cpu.register_a << 1 | bit_seven;
+        }));
+
+        // RLA  (1 M-cycles)
+        cpu.instructions[0x17 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let bit_seven = (cpu.register_a & 0b10000000) >> 7;
+            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+            cpu.register_f = (cpu.register_f & 0b00000000) | bit_seven << 4;
+            cpu.register_a = cpu.register_a << 1 | carry_bit;
+        }));
+
+        // RRCA  (1 M-cycles)
+        cpu.instructions[0x0F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let bit_zero = cpu.register_a & 0b00000001;
+            cpu.register_f = (cpu.register_f & 0b00000000) | bit_zero << 4;
+            cpu.register_a = cpu.register_a >> 1 | bit_zero << 7;
+        }));
+
+        // RRA  (1 M-cycles)
+        cpu.instructions[0x1F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let bit_zero = cpu.register_a & 0b00000001;
+            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+            cpu.register_f = (cpu.register_f & 0b00000000) | bit_zero << 4;
+            cpu.register_a = cpu.register_a >> 1 | carry_bit << 7;
+        }));
+
         cpu
     }
 
@@ -1938,5 +1969,87 @@ mod tests {
         cpu.run_test(vec![0xF8, 0xF0]);
         assert_eq!(CPU::combine_bytes(cpu.register_h, cpu.register_l), 0x00EE);
         assert_eq!(cpu.stack_pointer, 0xFFFE);
+    }
+
+    #[test]
+    fn rlca_bit_zero_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x07]);
+        assert_eq!(cpu.register_a, 0b00100010);
+    }
+
+    #[test]
+    fn rlca_bit_zero_is_one() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000000;
+        cpu.run_test(vec![0x07]);
+        assert_eq!(cpu.register_a, 0b00000001);
+    }
+
+    #[test]
+    fn rlca_carry_flag_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x07]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn rlca_carry_flag_is_one() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000000;
+        cpu.run_test(vec![0x07]);
+        assert_eq!(cpu.register_f, 0b00010000);
+    }
+
+    #[test]
+    fn rla_carry_bit_becomes_bit_seven() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b10010000;
+        cpu.register_a = 0b01111111;
+        cpu.run_test(vec![0x17]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn rla_bit_zero_becomes_carry_bit() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00010000;
+        cpu.register_a = 0b00000000;
+        cpu.run_test(vec![0x17]);
+        assert_eq!(cpu.register_a, 0b000000001);
+    }
+
+    #[test]
+    fn rrca() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000001;
+        cpu.run_test(vec![0x0F]);
+        assert_eq!(cpu.register_a, 0b11000000);
+    }
+
+    #[test]
+    fn rrca_flags() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000001;
+        cpu.run_test(vec![0x0F]);
+        assert_eq!(cpu.register_f, 0b00010000);
+    }
+
+    #[test]
+    fn rra() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000000;
+        cpu.register_f = 0b00010000;
+        cpu.run_test(vec![0x1F]);
+        assert_eq!(cpu.register_a, 0b11000000);
+    }
+
+    #[test]
+    fn rra_flags() {
+        let mut cpu = CPU::new();
+        cpu.register_a = 0b10000000;
+        cpu.register_f = 0b00010000;
+        cpu.run_test(vec![0x1F]);
+        assert_eq!(cpu.register_f, 0b00000000);
     }
 }
