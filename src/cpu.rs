@@ -751,35 +751,79 @@ impl CPU {
             cpu.register_f = cpu.register_f & 0b00111111;
         }));
 
-        // Rotate and shift instructions1
+        // Rotate and shift instructions
         // RLCA  (1 M-cycles)
         cpu.instructions[0x07 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let bit_seven = (cpu.register_a & 0b10000000) >> 7;
-            cpu.register_f = (cpu.register_f & 0b00000000) | bit_seven << 4;
-            cpu.register_a = cpu.register_a << 1 | bit_seven;
+            cpu.rlc(7);
+            cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RLA  (1 M-cycles)
         cpu.instructions[0x17 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let bit_seven = (cpu.register_a & 0b10000000) >> 7;
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.register_f = (cpu.register_f & 0b00000000) | bit_seven << 4;
-            cpu.register_a = cpu.register_a << 1 | carry_bit;
+            cpu.rl(7, cpu.get_carry_bit());
+            cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RRCA  (1 M-cycles)
         cpu.instructions[0x0F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let bit_zero = cpu.register_a & 0b00000001;
-            cpu.register_f = (cpu.register_f & 0b00000000) | bit_zero << 4;
-            cpu.register_a = cpu.register_a >> 1 | bit_zero << 7;
+            cpu.rrc(7);
+            cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RRA  (1 M-cycles)
         cpu.instructions[0x1F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let bit_zero = cpu.register_a & 0b00000001;
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.register_f = (cpu.register_f & 0b00000000) | bit_zero << 4;
-            cpu.register_a = cpu.register_a >> 1 | carry_bit << 7;
+            cpu.rr(7, cpu.get_carry_bit());
+            cpu.register_f = cpu.register_f & 0b01111111;
+        }));
+
+        // All 0xCB instructions
+        cpu.instructions[0xCB as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let arg = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let arg_high_nibble = (arg & 0b11110000) >> 4;
+            let arg_low_nibble = arg & 0b00001111;
+
+            match arg_high_nibble {
+                0 => match arg_low_nibble {
+                    6 => {
+                        // RLC (HL)  (4 M-cycles)
+                        cpu.rlc_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    0xE => {
+                        // RRC (HL)  (4 M-cycles)
+                        cpu.rrc_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    // RLC r  (2 M-cycles)
+                    0..=7 => cpu.rlc(arg_low_nibble),
+
+                    // RRC r  (2 M-cycles)
+                    8..=0xF => cpu.rrc(arg_low_nibble),
+                    _ => (),
+                },
+                1 => match arg_low_nibble {
+                    6 => {
+                        // RL (HL)  (4 M-cycles)
+                        cpu.rl_indirect(
+                            CPU::combine_bytes(cpu.register_h, cpu.register_l),
+                            cpu.get_carry_bit(),
+                        );
+                    }
+                    0xE => {
+                        // RR (HL)  (4 M-cycles)
+                        cpu.rr_indirect(
+                            CPU::combine_bytes(cpu.register_h, cpu.register_l),
+                            cpu.get_carry_bit(),
+                        );
+                    }
+                    // RL r  (2 M-cycles)
+                    0..=7 => cpu.rl(arg_low_nibble, cpu.get_carry_bit()),
+
+                    // RR r  (2 M-cycles)
+                    8..=0xF => cpu.rr(arg_low_nibble, cpu.get_carry_bit()),
+                    _ => (),
+                },
+                _ => {}
+            }
         }));
 
         cpu
@@ -943,6 +987,82 @@ impl CPU {
         } else {
             !num + 1
         }
+    }
+
+    fn get_carry_bit(&self) -> u8 {
+        return (self.register_f & 0b00010000) >> 4;
+    }
+
+    fn rlc(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let bit_seven = (*register & 0b10000000) >> 7;
+            *register = *register << 1 | bit_seven;
+            let is_zero = if *register == 0 { 1 } else { 0 };
+            self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
+        }
+    }
+
+    fn rlc_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let bit_seven = (value & 0b10000000) >> 7;
+        self.write(address, value << 1 | bit_seven);
+        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
+    }
+
+    fn rl(&mut self, register_num: u8, carry_bit: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let bit_seven = (*register & 0b10000000) >> 7;
+            *register = *register << 1 | carry_bit;
+            let is_zero = if *register == 0 { 1 } else { 0 };
+            self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
+        }
+    }
+
+    fn rl_indirect(&mut self, address: u16, carry_bit: u8) {
+        let value = self.read(address);
+        let bit_seven = (value & 0b10000000) >> 7;
+        self.write(address, value << 1 | carry_bit);
+        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
+    }
+
+    fn rrc(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let bit_zero = *register & 0b00000001;
+            *register = *register >> 1 | bit_zero << 7;
+            let is_zero = if *register == 0 { 1 } else { 0 };
+            self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
+        }
+    }
+
+    fn rrc_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let bit_zero = value & 0b00000001;
+        self.write(address, value >> 1 | bit_zero << 7);
+        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
+    }
+
+    fn rr(&mut self, register_num: u8, carry_bit: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let bit_zero = *register & 0b00000001;
+            *register = *register >> 1 | carry_bit << 7;
+            let is_zero = if *register == 0 { 1 } else { 0 };
+            self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
+        }
+    }
+
+    fn rr_indirect(&mut self, address: u16, carry_bit: u8) {
+        let value = self.read(address);
+        let bit_zero = value & 0b00000001;
+        self.write(address, value >> 1 | carry_bit << 7);
+        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
     }
 }
 
@@ -2051,5 +2171,15 @@ mod tests {
         cpu.register_f = 0b00010000;
         cpu.run_test(vec![0x1F]);
         assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn rlc_hl() {
+        // Mainly just to test the 0xCB instructions are mapped correctly
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b10000000);
+        cpu.run_test(vec![0xCB, 0x06]);
+        assert_eq!(cpu.read(hl), 0b00000001);
     }
 }
