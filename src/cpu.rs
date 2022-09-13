@@ -794,10 +794,10 @@ impl CPU {
                         cpu.rrc_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
                     }
                     // RLC r  (2 M-cycles)
-                    0..=7 => cpu.rlc(arg_low_nibble),
+                    reg_num @ 0..=7 => cpu.rlc(reg_num),
 
                     // RRC r  (2 M-cycles)
-                    8..=0xF => cpu.rrc(arg_low_nibble),
+                    reg_num @ 8..=0xF => cpu.rrc(reg_num - 8),
                     _ => (),
                 },
                 1 => match arg_low_nibble {
@@ -816,10 +816,25 @@ impl CPU {
                         );
                     }
                     // RL r  (2 M-cycles)
-                    0..=7 => cpu.rl(arg_low_nibble, cpu.get_carry_bit()),
+                    reg_num @ 0..=7 => cpu.rl(reg_num, cpu.get_carry_bit()),
 
                     // RR r  (2 M-cycles)
-                    8..=0xF => cpu.rr(arg_low_nibble, cpu.get_carry_bit()),
+                    reg_num @ 8..=0xF => cpu.rr(reg_num - 8, cpu.get_carry_bit()),
+                    _ => (),
+                },
+                2 => match arg_low_nibble {
+                    6 => {
+                        // SLA (HL)  (4 M-cycles)
+                        cpu.sla_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    0xE => {
+                        // SRA (HL)  (4 M-cycles)
+                        cpu.sra_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    // SLA r  (2 M-cycles)
+                    reg_num @ 0..=7 => cpu.sla(reg_num),
+                    // SRA r  (2 M-cycles)
+                    reg_num @ 8..=0xF => cpu.sra(reg_num - 8),
                     _ => (),
                 },
                 _ => {}
@@ -863,7 +878,7 @@ impl CPU {
         }
 
         let initial_pc = self.program_counter as usize;
-        while self.program_counter as usize <= initial_pc + program.len() {
+        while self.program_counter as usize <= initial_pc + program.len() - 1 {
             let opcode = self.read(self.program_counter);
             self.program_counter += 1;
             self.execute(opcode);
@@ -1063,6 +1078,44 @@ impl CPU {
         self.write(address, value >> 1 | carry_bit << 7);
         let is_zero = if self.read(address) == 0 { 1 } else { 0 };
         self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
+    }
+
+    fn sla(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let carry_bit = (*register & 0b10000000) >> 7;
+            *register = *register << 1;
+            let zero_bit = if *register == 0 { 1 } else { 0 };
+            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+        }
+    }
+
+    fn sla_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let carry_bit = (value & 0b10000000) >> 7;
+        self.write(address, value << 1);
+        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+    }
+
+    fn sra(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let bit_seven = *register & 0b10000000;
+            let carry_bit = *register & 0b00000001;
+            *register = (*register >> 1) | bit_seven;
+            let zero_bit = if *register == 0 { 1 } else { 0 };
+            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+        }
+    }
+
+    fn sra_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let bit_seven = value & 0b10000000;
+        let carry_bit = value & 0b00000001;
+        self.write(address, (value >> 1) | bit_seven);
+        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
     }
 }
 
@@ -2181,5 +2234,55 @@ mod tests {
         cpu.write(hl, 0b10000000);
         cpu.run_test(vec![0xCB, 0x06]);
         assert_eq!(cpu.read(hl), 0b00000001);
+    }
+
+    #[test]
+    fn sla_b() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b01010011;
+        cpu.run_test(vec![0xCB, 0x20]);
+        assert_eq!(cpu.register_b, 0b10100110);
+    }
+
+    #[test]
+    fn sla_b_flags() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b11010011;
+        cpu.run_test(vec![0xCB, 0x20]);
+        assert_eq!(cpu.register_f, 0b00010000);
+    }
+
+    #[test]
+    fn sla_hl() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b01011111);
+        cpu.run_test(vec![0xCB, 0x26]);
+        assert_eq!(cpu.read(hl), 0b10111110);
+    }
+
+    #[test]
+    fn sra_b() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b11010000;
+        cpu.run_test(vec![0xCB, 0x28]);
+        assert_eq!(cpu.register_b, 0b11101000);
+    }
+
+    #[test]
+    fn sra_b_flags() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b01010011;
+        cpu.run_test(vec![0xCB, 0x28]);
+        assert_eq!(cpu.register_f, 0b00010000);
+    }
+
+    #[test]
+    fn sra_hl() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b01000001);
+        cpu.run_test(vec![0xCB, 0x2E]);
+        assert_eq!(cpu.read(hl), 0b00100000);
     }
 }
