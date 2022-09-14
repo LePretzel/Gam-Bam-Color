@@ -837,6 +837,21 @@ impl CPU {
                     reg_num @ 8..=0xF => cpu.sra(reg_num - 8),
                     _ => (),
                 },
+                3 => match arg_low_nibble {
+                    6 => {
+                        // SWAP (HL)  (4 M-cycles)
+                        cpu.swap_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    0xE => {
+                        // SRL (HL)  (4 M-cycles)
+                        cpu.srl_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                    }
+                    // SWAP r  (2 M-cycles)
+                    reg_num @ 0..=7 => cpu.swap(reg_num),
+                    // SRL r  (2 M-cycles)
+                    reg_num @ 8..=0xF => cpu.srl(reg_num - 8),
+                    _ => (),
+                },
                 _ => {}
             }
         }));
@@ -1116,6 +1131,44 @@ impl CPU {
         self.write(address, (value >> 1) | bit_seven);
         let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
         self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+    }
+
+    fn srl(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let carry_bit = *register & 0b00000001;
+            *register = *register >> 1;
+            let zero_bit = if *register == 0 { 1 } else { 0 };
+            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+        }
+    }
+
+    fn srl_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let carry_bit = value & 0b00000001;
+        self.write(address, value >> 1);
+        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+    }
+
+    fn swap(&mut self, register_num: u8) {
+        let register_option = self.get_register(register_num);
+        if let Some(register) = register_option {
+            let high_nibble = *register & 0b11110000;
+            let low_nibble = *register & 0b00001111;
+            *register = low_nibble << 4 | high_nibble >> 4;
+            let zero_bit = if *register == 0 { 1 } else { 0 };
+            self.register_f = 0b00000000 | zero_bit << 7;
+        }
+    }
+
+    fn swap_indirect(&mut self, address: u16) {
+        let value = self.read(address);
+        let high_nibble = value & 0b11110000;
+        let low_nibble = value & 0b00001111;
+        self.write(address, low_nibble << 4 | high_nibble >> 4);
+        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
+        self.register_f = 0b00000000 | zero_bit << 7;
     }
 }
 
@@ -2284,5 +2337,47 @@ mod tests {
         cpu.write(hl, 0b01000001);
         cpu.run_test(vec![0xCB, 0x2E]);
         assert_eq!(cpu.read(hl), 0b00100000);
+    }
+
+    #[test]
+    fn srl_b() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b11010000;
+        cpu.run_test(vec![0xCB, 0x38]);
+        assert_eq!(cpu.register_b, 0b01101000);
+    }
+
+    #[test]
+    fn srl_hl() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b01000001);
+        cpu.run_test(vec![0xCB, 0x3E]);
+        assert_eq!(cpu.read(hl), 0b00100000);
+    }
+
+    #[test]
+    fn swap_b() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b11010000;
+        cpu.run_test(vec![0xCB, 0x30]);
+        assert_eq!(cpu.register_b, 0b00001101);
+    }
+
+    #[test]
+    fn swap_b_flags() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b11010000;
+        cpu.run_test(vec![0xCB, 0x30]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn swap_hl() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b01000001);
+        cpu.run_test(vec![0xCB, 0x36]);
+        assert_eq!(cpu.read(hl), 0b00010100);
     }
 }
