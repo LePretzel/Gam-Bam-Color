@@ -760,25 +760,25 @@ impl CPU {
         // Rotate and shift instructions
         // RLCA  (1 M-cycles)
         cpu.instructions[0x07 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rlc(7);
+            cpu.rlc(Register(7));
             cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RLA  (1 M-cycles)
         cpu.instructions[0x17 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rl(7, cpu.get_carry_bit());
+            cpu.rl(Register(7), cpu.get_carry_bit());
             cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RRCA  (1 M-cycles)
         cpu.instructions[0x0F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rrc(7);
+            cpu.rrc(Register(7));
             cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
         // RRA  (1 M-cycles)
         cpu.instructions[0x1F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rr(7, cpu.get_carry_bit());
+            cpu.rr(Register(7), cpu.get_carry_bit());
             cpu.register_f = cpu.register_f & 0b01111111;
         }));
 
@@ -793,69 +793,69 @@ impl CPU {
                 0 => match arg_low_nibble {
                     6 => {
                         // RLC (HL)  (4 M-cycles)
-                        cpu.rlc_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.rlc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     0xE => {
                         // RRC (HL)  (4 M-cycles)
-                        cpu.rrc_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.rrc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     // RLC r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.rlc(reg_num),
+                    reg_num @ 0..=7 => cpu.rlc(Register(reg_num)),
 
                     // RRC r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.rrc(reg_num - 8),
+                    reg_num @ 8..=0xF => cpu.rrc(Register(reg_num - 8)),
                     _ => (),
                 },
                 1 => match arg_low_nibble {
                     6 => {
                         // RL (HL)  (4 M-cycles)
-                        cpu.rl_indirect(
-                            CPU::combine_bytes(cpu.register_h, cpu.register_l),
+                        cpu.rl(
+                            Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
                             cpu.get_carry_bit(),
                         );
                     }
                     0xE => {
                         // RR (HL)  (4 M-cycles)
-                        cpu.rr_indirect(
-                            CPU::combine_bytes(cpu.register_h, cpu.register_l),
+                        cpu.rr(
+                            Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
                             cpu.get_carry_bit(),
                         );
                     }
                     // RL r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.rl(reg_num, cpu.get_carry_bit()),
+                    reg_num @ 0..=7 => cpu.rl(Register(reg_num), cpu.get_carry_bit()),
 
                     // RR r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.rr(reg_num - 8, cpu.get_carry_bit()),
+                    reg_num @ 8..=0xF => cpu.rr(Register(reg_num - 8), cpu.get_carry_bit()),
                     _ => (),
                 },
                 2 => match arg_low_nibble {
                     6 => {
                         // SLA (HL)  (4 M-cycles)
-                        cpu.sla_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.sla(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     0xE => {
                         // SRA (HL)  (4 M-cycles)
-                        cpu.sra_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.sra(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     // SLA r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.sla(reg_num),
+                    reg_num @ 0..=7 => cpu.sla(Register(reg_num)),
                     // SRA r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.sra(reg_num - 8),
+                    reg_num @ 8..=0xF => cpu.sra(Register(reg_num - 8)),
                     _ => (),
                 },
                 3 => match arg_low_nibble {
                     6 => {
                         // SWAP (HL)  (4 M-cycles)
-                        cpu.swap_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.swap(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     0xE => {
                         // SRL (HL)  (4 M-cycles)
-                        cpu.srl_indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                        cpu.srl(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
                     }
                     // SWAP r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.swap(reg_num),
+                    reg_num @ 0..=7 => cpu.swap(Register(reg_num)),
                     // SRL r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.srl(reg_num - 8),
+                    reg_num @ 8..=0xF => cpu.srl(Register(reg_num - 8)),
                     _ => (),
                 },
                 4..=7 => {
@@ -1069,152 +1069,86 @@ impl CPU {
         return (self.register_f & 0b00010000) >> 4;
     }
 
-    fn rlc(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let bit_seven = (*register & 0b10000000) >> 7;
-            *register = *register << 1 | bit_seven;
-            let is_zero = if *register == 0 { 1 } else { 0 };
+    fn rlc(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let bit_seven = (*source & 0b10000000) >> 7;
+            *source = *source << 1 | bit_seven;
+            let is_zero = if *source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
 
-    fn rlc_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let bit_seven = (value & 0b10000000) >> 7;
-        self.write(address, value << 1 | bit_seven);
-        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
-    }
-
-    fn rl(&mut self, register_num: u8, carry_bit: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let bit_seven = (*register & 0b10000000) >> 7;
-            *register = *register << 1 | carry_bit;
-            let is_zero = if *register == 0 { 1 } else { 0 };
+    fn rl(&mut self, op: Operand, carry_bit: u8) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let bit_seven = (*source & 0b10000000) >> 7;
+            *source = *source << 1 | carry_bit;
+            let is_zero = if *source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
 
-    fn rl_indirect(&mut self, address: u16, carry_bit: u8) {
-        let value = self.read(address);
-        let bit_seven = (value & 0b10000000) >> 7;
-        self.write(address, value << 1 | carry_bit);
-        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
-    }
-
-    fn rrc(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let bit_zero = *register & 0b00000001;
-            *register = *register >> 1 | bit_zero << 7;
-            let is_zero = if *register == 0 { 1 } else { 0 };
+    fn rrc(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let bit_zero = *source & 0b00000001;
+            *source = *source >> 1 | bit_zero << 7;
+            let is_zero = if *source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
 
-    fn rrc_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let bit_zero = value & 0b00000001;
-        self.write(address, value >> 1 | bit_zero << 7);
-        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
-    }
-
-    fn rr(&mut self, register_num: u8, carry_bit: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let bit_zero = *register & 0b00000001;
-            *register = *register >> 1 | carry_bit << 7;
-            let is_zero = if *register == 0 { 1 } else { 0 };
+    fn rr(&mut self, op: Operand, carry_bit: u8) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let bit_zero = *source & 0b00000001;
+            *source = *source >> 1 | carry_bit << 7;
+            let is_zero = if *source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
 
-    fn rr_indirect(&mut self, address: u16, carry_bit: u8) {
-        let value = self.read(address);
-        let bit_zero = value & 0b00000001;
-        self.write(address, value >> 1 | carry_bit << 7);
-        let is_zero = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
-    }
-
-    fn sla(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let carry_bit = (*register & 0b10000000) >> 7;
-            *register = *register << 1;
-            let zero_bit = if *register == 0 { 1 } else { 0 };
+    fn sla(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let carry_bit = (*source & 0b10000000) >> 7;
+            *source = *source << 1;
+            let zero_bit = if *source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
-    fn sla_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let carry_bit = (value & 0b10000000) >> 7;
-        self.write(address, value << 1);
-        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
-    }
-
-    fn sra(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let bit_seven = *register & 0b10000000;
-            let carry_bit = *register & 0b00000001;
-            *register = (*register >> 1) | bit_seven;
-            let zero_bit = if *register == 0 { 1 } else { 0 };
+    fn sra(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let bit_seven = *source & 0b10000000;
+            let carry_bit = *source & 0b00000001;
+            *source = (*source >> 1) | bit_seven;
+            let zero_bit = if *source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
-    fn sra_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let bit_seven = value & 0b10000000;
-        let carry_bit = value & 0b00000001;
-        self.write(address, (value >> 1) | bit_seven);
-        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
-    }
-
-    fn srl(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let carry_bit = *register & 0b00000001;
-            *register = *register >> 1;
-            let zero_bit = if *register == 0 { 1 } else { 0 };
+    fn srl(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let carry_bit = *source & 0b00000001;
+            *source = *source >> 1;
+            let zero_bit = if *source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
-    fn srl_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let carry_bit = value & 0b00000001;
-        self.write(address, value >> 1);
-        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
-    }
-
-    fn swap(&mut self, register_num: u8) {
-        let register_option = self.get_register(register_num);
-        if let Some(register) = register_option {
-            let high_nibble = *register & 0b11110000;
-            let low_nibble = *register & 0b00001111;
-            *register = low_nibble << 4 | high_nibble >> 4;
-            let zero_bit = if *register == 0 { 1 } else { 0 };
+    fn swap(&mut self, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let high_nibble = *source & 0b11110000;
+            let low_nibble = *source & 0b00001111;
+            *source = low_nibble << 4 | high_nibble >> 4;
+            let zero_bit = if *source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | zero_bit << 7;
         }
-    }
-
-    fn swap_indirect(&mut self, address: u16) {
-        let value = self.read(address);
-        let high_nibble = value & 0b11110000;
-        let low_nibble = value & 0b00001111;
-        self.write(address, low_nibble << 4 | high_nibble >> 4);
-        let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
-        self.register_f = 0b00000000 | zero_bit << 7;
     }
 
     fn bit(&mut self, bit_num: u8, op: Operand) {
