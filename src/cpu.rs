@@ -1,6 +1,12 @@
 use std::{fs, num::Wrapping, rc::Rc};
 
+use crate::cpu::Operand::{Indirect, Register};
 use crate::memory::Memory;
+
+enum Operand {
+    Register(u8),
+    Indirect(u16),
+}
 
 pub struct CPU {
     // Register pairs
@@ -852,6 +858,39 @@ impl CPU {
                     reg_num @ 8..=0xF => cpu.srl(reg_num - 8),
                     _ => (),
                 },
+                4..=7 => {
+                    let bit_num = (arg & 0b00111000) >> 3;
+                    let reg_num = arg & 0b00000111;
+                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                    match arg_low_nibble {
+                        // BIT n, r  (2 M-cycles)
+                        6 | 0xE => cpu.bit(bit_num, Indirect(hl)),
+                        // BIT n, (hl)  (3 M-cycles)
+                        _ => cpu.bit(bit_num, Register(reg_num)),
+                    }
+                }
+                8..=0xB => {
+                    let bit_num = (arg & 0b00111000) >> 3;
+                    let reg_num = arg & 0b00000111;
+                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                    match arg_low_nibble {
+                        // RES n, r  (2 M-cycles)
+                        6 | 0xE => cpu.res(bit_num, Indirect(hl)),
+                        // RES n, (hl)  (4 M-cycles)
+                        _ => cpu.res(bit_num, Register(reg_num)),
+                    }
+                }
+                0xC..=0xF => {
+                    let bit_num = (arg & 0b00111000) >> 3;
+                    let reg_num = arg & 0b00000111;
+                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                    match arg_low_nibble {
+                        // SET n, r  (2 M-cycles)
+                        6 | 0xE => cpu.set(bit_num, Indirect(hl)),
+                        // SET n, (hl)  (4 M-cycles)
+                        _ => cpu.set(bit_num, Register(reg_num)),
+                    }
+                }
                 _ => {}
             }
         }));
@@ -932,6 +971,13 @@ impl CPU {
             2 => Some((&mut self.register_h, &mut self.register_l)),
             3 => Some((&mut self.register_a, &mut self.register_f)),
             _ => None,
+        }
+    }
+
+    fn get_operand(&mut self, op: Operand) -> Option<&mut u8> {
+        match op {
+            Register(r) => self.get_register(r),
+            Indirect(a) => Some(self.get_memory_ref(a)),
         }
     }
 
@@ -1170,6 +1216,31 @@ impl CPU {
         let zero_bit = if self.read(address) == 0 { 1 } else { 0 };
         self.register_f = 0b00000000 | zero_bit << 7;
     }
+
+    fn bit(&mut self, bit_num: u8, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let mask = 1 << bit_num;
+            let test_bit = (*source & mask) >> bit_num;
+            self.register_f = self.register_f & 0b00011111 | 0b00100000 | test_bit << 7;
+        }
+    }
+
+    fn res(&mut self, bit_num: u8, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let mask = !(1 << bit_num);
+            *source = *source & mask;
+        }
+    }
+
+    fn set(&mut self, bit_num: u8, op: Operand) {
+        let source_option = self.get_operand(op);
+        if let Some(source) = source_option {
+            let set_bit = 1 << bit_num;
+            *source = *source | set_bit;
+        }
+    }
 }
 
 impl Memory for CPU {
@@ -1196,6 +1267,10 @@ impl Memory for CPU {
         let high = (data >> 8) as u8;
         self.write(address, low);
         self.write(address + 1, high);
+    }
+
+    fn get_memory_ref(&mut self, address: u16) -> &mut u8 {
+        &mut self.memory[address as usize]
     }
 }
 
@@ -2379,5 +2454,94 @@ mod tests {
         cpu.write(hl, 0b01000001);
         cpu.run_test(vec![0xCB, 0x36]);
         assert_eq!(cpu.read(hl), 0b00010100);
+    }
+
+    #[test]
+    fn bit_0_b_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0x40]);
+        assert_eq!(cpu.register_f, 0b00100000);
+    }
+
+    #[test]
+    fn bit_7_b_is_one() {
+        let mut cpu = CPU::new();
+        cpu.register_b = 0b10000000;
+        cpu.run_test(vec![0xCB, 0x78]);
+        assert_eq!(cpu.register_f, 0b10100000);
+    }
+
+    #[test]
+    fn bit_5_hl_is_one() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b00100000);
+        cpu.run_test(vec![0xCB, 0x6E]);
+        assert_eq!(cpu.register_f, 0b10100000);
+    }
+
+    #[test]
+    fn bit_4_hl_is_zero() {
+        let mut cpu = CPU::new();
+        let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, 0b00100000);
+        cpu.run_test(vec![0xCB, 0x66]);
+        assert_eq!(cpu.register_f, 0b00100000);
+    }
+
+    #[test]
+    fn res_0_a() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0x87]);
+        assert_eq!(cpu.register_a, 0b00010000);
+    }
+
+    #[test]
+    fn res_4_a() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xA7]);
+        assert_eq!(cpu.register_a, 0b00000001);
+    }
+
+    #[test]
+    fn res_7_d() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xBA]);
+        assert_eq!(cpu.register_d, 0b01111111);
+    }
+
+    #[test]
+    fn res_0_b_doesnt_change_bit_if_already_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0x80]);
+        assert_eq!(cpu.register_b, 0b00000000);
+    }
+
+    #[test]
+    fn set_0_c() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xC1]);
+        assert_eq!(cpu.register_c, 0b00000001);
+    }
+
+    #[test]
+    fn set_2_c() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xD1]);
+        assert_eq!(cpu.register_c, 0b00000100);
+    }
+
+    #[test]
+    fn set_7_c() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xF9]);
+        assert_eq!(cpu.register_c, 0b10000000);
+    }
+
+    #[test]
+    fn set_7_d_doesnt_change_bit_if_already_one() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCB, 0xFA]);
+        assert_eq!(cpu.register_d, 0b11111111);
     }
 }
