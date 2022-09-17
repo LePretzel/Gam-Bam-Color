@@ -895,6 +895,17 @@ impl CPU {
             }
         }));
 
+        // CCF  (1 M-cycles)
+        cpu.instructions[0x3F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let carry_flag = !(cpu.register_f | 0b11101111);
+            cpu.register_f = cpu.register_f & 0b10000000 | carry_flag;
+        }));
+
+        // SCF  (1 M-cycles)
+        cpu.instructions[0x37 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.register_f = cpu.register_f & 0b10000000 | 0b00010000;
+        }));
+
         cpu
     }
 
@@ -2477,5 +2488,35 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0xCB, 0xFA]);
         assert_eq!(cpu.register_d, 0b11111111);
+    }
+
+    #[test]
+    fn ccf_cy_was_one() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00010000;
+        cpu.run_test(vec![0x3F]);
+        assert_eq!(cpu.register_f, 0b00000000);
+    }
+
+    #[test]
+    fn ccf_cy_was_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x3F]);
+        assert_eq!(cpu.register_f, 0b10010000);
+    }
+
+    #[test]
+    fn scf_cy_was_one() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00010000;
+        cpu.run_test(vec![0x37]);
+        assert_eq!(cpu.register_f, 0b00010000);
+    }
+
+    #[test]
+    fn scf_cy_was_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0x37]);
+        assert_eq!(cpu.register_f, 0b10010000);
     }
 }
