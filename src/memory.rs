@@ -4,4 +4,5 @@ pub trait Memory {
     fn read_u16(&self, address: u16) -> u16;
     fn write_u16(&mut self, address: u16, data: u16);
     fn get_memory_ref(&mut self, address: u16) -> &mut u8;
+    fn get_memory_ref_pair(&mut self, address1: u16, address2: u16) -> (&mut u8, &mut u8);
 }

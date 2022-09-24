@@ -1,11 +1,19 @@
+use std::collections::VecDeque;
 use std::{fs, num::Wrapping, rc::Rc};
 
-use crate::cpu::Operand::{Indirect, Register};
+use crate::cpu::Operand::{Immediate, Indirect, Register};
+use crate::cpu::Operand_u16::{Immediate_u16, RegisterPair};
 use crate::memory::Memory;
 
 enum Operand {
     Register(u8),
     Indirect(u16),
+    Immediate,
+}
+
+enum Operand_u16 {
+    RegisterPair(u8),
+    Immediate_u16,
 }
 
 pub struct CPU {
@@ -26,6 +34,9 @@ pub struct CPU {
     program_counter: u16,
     memory: [u8; 0xFFFF + 1],
     instructions: [Option<Rc<dyn Fn(&mut Self) -> ()>>; 0xFF + 1],
+    halted: bool,
+    ime: bool,
+    ei_queue: VecDeque<Option<bool>>,
 }
 
 impl CPU {
@@ -44,6 +55,9 @@ impl CPU {
             program_counter: 0x0100,
             memory: [0; 0xFFFF + 1],
             instructions: [INIT_INSTRUCTION; 0xFF + 1],
+            halted: false,
+            ime: false,
+            ei_queue: VecDeque::new(),
         };
 
         // 8-bit LD instructions
@@ -266,12 +280,7 @@ impl CPU {
             let opcode = 0b11000101 | (source_num << 4);
 
             cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source_option = cpu.get_register_pair(source_num);
-                if let Some((high, low)) = source_option {
-                    let source = CPU::combine_bytes(*high, *low);
-                    cpu.stack_pointer -= 2;
-                    cpu.write_u16(cpu.stack_pointer, source);
-                }
+                cpu.push(RegisterPair(source_num));
             }));
         }
 
@@ -281,13 +290,7 @@ impl CPU {
             let opcode = 0b11000001 | (dest_num << 4);
 
             cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source = cpu.read_u16(cpu.stack_pointer);
-                cpu.stack_pointer += 2;
-                let dest_option = cpu.get_register_pair(dest_num);
-                if let Some((high, low)) = dest_option {
-                    *low = source as u8;
-                    *high = (source >> 8) as u8;
-                }
+                cpu.pop(RegisterPair(dest_num));
             }));
         }
 
@@ -906,6 +909,31 @@ impl CPU {
             cpu.register_f = cpu.register_f & 0b10000000 | 0b00010000;
         }));
 
+        // NOP  (1 M-cycles)
+        cpu.instructions[0x00 as usize] = Some(Rc::new(move |cpu: &mut CPU| {}));
+
+        // HALT  (N M-cycles)
+        cpu.instructions[0x76] = Some(Rc::new(move |cpu: &mut CPU| {
+            // Halt bug not implemented yet
+            cpu.halted = true;
+        }));
+
+        // STOP  (N M-cycles)
+        //todo!("stop");
+
+        // DI (1 M-cycles)
+        cpu.instructions[0xF3] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.ei_queue.clear();
+            cpu.ei_queue.push_back(Some(false));
+        }));
+
+        // EI (1 M-cycles)
+        cpu.instructions[0xFB] = Some(Rc::new(move |cpu: &mut CPU| {
+            // Push a None first to emulate the instruction delay of EI
+            cpu.ei_queue.push_back(None);
+            cpu.ei_queue.push_back(Some(true));
+        }));
+
         cpu
     }
 
@@ -924,9 +952,12 @@ impl CPU {
     pub fn run(&mut self) {
         const ROM_LIMIT: u16 = 0x8000;
         while self.program_counter < ROM_LIMIT {
-            let opcode = self.read(self.program_counter);
-            self.program_counter += 1;
-            self.execute(opcode);
+            if !self.halted {
+                let opcode = self.read(self.program_counter);
+                self.program_counter += 1;
+                self.execute(opcode);
+            }
+            self.handle_interrupts();
         }
     }
 
@@ -944,9 +975,12 @@ impl CPU {
 
         let initial_pc = self.program_counter as usize;
         while self.program_counter as usize <= initial_pc + program.len() - 1 {
-            let opcode = self.read(self.program_counter);
-            self.program_counter += 1;
-            self.execute(opcode);
+            if !self.halted {
+                let opcode = self.read(self.program_counter);
+                self.program_counter += 1;
+                self.execute(opcode);
+            }
+            self.handle_interrupts();
         }
     }
 
@@ -956,6 +990,63 @@ impl CPU {
         }
         let inst = self.instructions[opcode as usize].as_ref().unwrap().clone();
         inst(self);
+    }
+
+    fn handle_interrupts(&mut self) {
+        if !self.ei_queue.is_empty() {
+            if let Some(Some(b)) = self.ei_queue.pop_front() {
+                self.ime = b;
+            }
+        }
+
+        let interrupt_flags = self.read(0xFF0F);
+        let interrupt_enabled = self.read(0xFFFF);
+
+        let interrupts = interrupt_flags & interrupt_enabled & 0b00011111;
+
+        if interrupts != 0 {
+            if !self.ime {
+                self.halted = false;
+                return;
+            }
+
+            self.ime = false;
+
+            // Vblank
+            if interrupts & 0b00000001 == 1 {
+                self.write(0xFF0F, interrupt_flags & 0b11111110);
+                self.call(0x0040);
+                return;
+            }
+
+            // STAT
+            if (interrupts & 0b00000010) >> 1 == 1 {
+                self.write(0xFF0F, interrupt_flags & 0b11111101);
+                self.call(0x0048);
+                return;
+            }
+
+            // Timer
+            if (interrupts & 0b00000100) >> 2 == 1 {
+                self.write(0xFF0F, interrupt_flags & 0b11111011);
+                self.call(0x0050);
+                return;
+            }
+
+            // Serial
+            if (interrupts & 0b00001000) >> 3 == 1 {
+                self.write(0xFF0F, interrupt_flags & 0b11110111);
+                self.call(0x0058);
+                return;
+            }
+
+            // Joypad
+            if (interrupts & 0b00010000) >> 4 == 1 {
+                self.write(0xFF0F, interrupt_flags & 0b11101111);
+                self.call(0x0060);
+                return;
+            }
+        }
     }
 
     fn combine_bytes(high: u8, low: u8) -> u16 {
@@ -989,6 +1080,22 @@ impl CPU {
         match op {
             Register(r) => self.get_register(r),
             Indirect(a) => Some(self.get_memory_ref(a)),
+            Immediate => {
+                self.program_counter += 1;
+                let arg = self.get_memory_ref(self.program_counter - 1);
+                Some(arg)
+            }
+        }
+    }
+
+    fn get_operand_pair(&mut self, op: Operand_u16) -> Option<(&mut u8, &mut u8)> {
+        match op {
+            RegisterPair(r) => self.get_register_pair(r),
+            Immediate_u16 => {
+                let pc_value = self.program_counter;
+                self.program_counter += 2;
+                Some(self.get_memory_ref_pair(pc_value + 1, pc_value + 2))
+            }
         }
     }
 
@@ -1078,6 +1185,27 @@ impl CPU {
 
     fn get_carry_bit(&self) -> u8 {
         return (self.register_f & 0b00010000) >> 4;
+    }
+
+    fn push(&mut self, op: Operand_u16) {
+        let sp_value = self.stack_pointer;
+        let source_option = self.get_operand_pair(op);
+        if let Some((high, low)) = source_option {
+            let (high_value, low_value) = (*high, *low);
+            self.write_u16(sp_value - 2, CPU::combine_bytes(high_value, low_value));
+            self.stack_pointer -= 2;
+        }
+    }
+
+    fn pop(&mut self, op: Operand_u16) {
+        let sp_value = self.stack_pointer;
+        let source = self.read_u16(sp_value);
+        let dest_option = self.get_operand_pair(op);
+        if let Some((high, low)) = dest_option {
+            *high = (source >> 8) as u8;
+            *low = source as u8;
+            self.stack_pointer += 2;
+        }
     }
 
     fn rlc(&mut self, op: Operand) {
@@ -1186,6 +1314,12 @@ impl CPU {
             *source = *source | set_bit;
         }
     }
+
+    fn call(&mut self, address: u16) {
+        self.stack_pointer -= 2;
+        self.write_u16(self.stack_pointer, self.program_counter);
+        self.program_counter = address;
+    }
 }
 
 impl Memory for CPU {
@@ -1216,6 +1350,13 @@ impl Memory for CPU {
 
     fn get_memory_ref(&mut self, address: u16) -> &mut u8 {
         &mut self.memory[address as usize]
+    }
+
+    fn get_memory_ref_pair(&mut self, address1: u16, address2: u16) -> (&mut u8, &mut u8) {
+        let (lower, upper) = self.memory.split_at_mut(address2 as usize);
+        let upper_byte = &mut upper[0];
+        let lower_byte = &mut lower[address1 as usize];
+        (upper_byte, lower_byte)
     }
 }
 
@@ -1578,6 +1719,10 @@ mod tests {
     fn multiple_pushes_multiple_pops() {
         let mut cpu = CPU::new();
         let initial = cpu.stack_pointer;
+        // push bc
+        // push de
+        // push hl
+        // pop bc   2 times
         cpu.run_test(vec![0xC5, 0xD5, 0xE5, 0xC1, 0xC1]);
         let changed = cpu.stack_pointer;
         assert_eq!(initial - changed, 2);
@@ -2518,5 +2663,51 @@ mod tests {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0x37]);
         assert_eq!(cpu.register_f, 0b10010000);
+    }
+
+    #[test]
+    fn ei_takes_a_one_cycle_delay() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xFB]);
+        assert_eq!(cpu.ime, false);
+        cpu.run_test(vec![0x00]);
+        assert_eq!(cpu.ime, true);
+    }
+
+    #[test]
+    fn di_stops_ei_during_delay() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xFB, 0xF3]);
+        assert_eq!(cpu.ime, false);
+    }
+
+    #[test]
+    fn halt_ends_after_interrupt() {
+        // TODO: Test halt more when interrupts are full implemented
+        let mut cpu = CPU::new();
+        // Queue vblank interrupt
+        cpu.write(0xFF0F, 0x01);
+        cpu.write(0xFFFF, 0x01);
+        // HALT
+        // LD A, $FF
+        cpu.run_test(vec![0x76, 0x3E, 0xFF]);
+        assert_eq!(cpu.register_a, 0xFF);
+    }
+
+    #[test]
+    fn joypad_interrupt_is_handled() {
+        let mut cpu = CPU::new();
+        // Queue joypad interrupt
+        cpu.write(0xFF0F, 0x10);
+        cpu.write(0xFFFF, 0x10);
+        // Write (ld a, 0xFF) instruction to interrupt vector
+        cpu.write(0x60, 0x3E);
+        cpu.write(0x61, 0xFF);
+        // EI
+        cpu.run_test(vec![0xFB]);
+        assert_eq!(cpu.register_a, 0x11);
+        // NOP just for delay
+        cpu.run_test(vec![0x00]);
+        assert_eq!(cpu.register_a, 0xFF);
     }
 }
