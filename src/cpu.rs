@@ -16,6 +16,8 @@ enum Operand_u16 {
     Immediate_u16,
 }
 
+type Instruction = Rc<dyn Fn(&mut CPU) -> ()>;
+
 pub struct CPU {
     // Register pairs
     register_a: u8, // Accumulator
@@ -33,7 +35,7 @@ pub struct CPU {
     stack_pointer: u16,
     program_counter: u16,
     memory: [u8; 0xFFFF + 1],
-    instructions: [Option<Rc<dyn Fn(&mut Self) -> ()>>; 0xFF + 1],
+    instructions: [Option<Instruction>; 0xFF + 1],
     halted: bool,
     ime: bool,
     ei_queue: VecDeque<Option<bool>>,
@@ -41,7 +43,7 @@ pub struct CPU {
 
 impl CPU {
     pub fn new() -> Self {
-        const INIT_INSTRUCTION: Option<Rc<dyn Fn(&mut CPU) -> ()>> = None;
+        const INIT_INSTRUCTION: Option<Instruction> = None;
         let mut cpu = CPU {
             register_a: 0x11,
             register_f: 0x80,
@@ -61,7 +63,7 @@ impl CPU {
         };
 
         // 8-bit LD instructions
-        // LD r, r'  (1 M-cycle)
+        // LD r, r'  (1 M-cycles)
         for i in 0..8 {
             for j in 0..8 {
                 let source_num = j as u8;
@@ -898,6 +900,7 @@ impl CPU {
             }
         }));
 
+        // CPU control instructions
         // CCF  (1 M-cycles)
         cpu.instructions[0x3F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
             let carry_flag = !(cpu.register_f | 0b11101111);
@@ -933,6 +936,90 @@ impl CPU {
             cpu.ei_queue.push_back(None);
             cpu.ei_queue.push_back(Some(true));
         }));
+
+        // Jump instructions
+        // JP nn  (4 M-cycles)
+        cpu.instructions[0xC3] = Some(Rc::new(move |cpu: &mut CPU| {
+            let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
+            cpu.program_counter = CPU::combine_bytes(*high, *low);
+        }));
+
+        // JP HL  (1 M-cycles)
+        cpu.instructions[0xE9] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.program_counter = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        }));
+
+        // JP f, nn  (4/3 M-cycles)
+        for i in (0xC2..=0xDA).step_by(8) {
+            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                if cpu.test_condition_code(i - 0xC2) {
+                    let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
+                    cpu.program_counter = CPU::combine_bytes(*high, *low);
+                }
+            }));
+        }
+
+        // JR PC+dd  (3 M-cycles)
+        cpu.instructions[0x18] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.jr();
+        }));
+
+        // JR f, PC+dd  (3/2 M-cycles)
+        for i in (0x20..=0x38).step_by(8) {
+            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                if cpu.test_condition_code(i - 0x20) {
+                    cpu.jr();
+                }
+            }));
+        }
+
+        // CALL nn  (6 M-cycles)
+        cpu.instructions[0xCD] = Some(Rc::new(move |cpu: &mut CPU| {
+            let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
+            let (high_value, low_value) = (*high, *low);
+            cpu.call(CPU::combine_bytes(high_value, low_value));
+        }));
+
+        // CALL f, nn  (6/3 M-cycles)
+        for i in (0xC4..=0xDC).step_by(8) {
+            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                if cpu.test_condition_code(i - 0xC4) {
+                    let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
+                    let (high_value, low_value) = (*high, *low);
+                    cpu.call(CPU::combine_bytes(high_value, low_value));
+                }
+            }));
+        }
+
+        // RET  (4 M-cycles)
+        cpu.instructions[0xC9] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+            cpu.stack_pointer += 2;
+        }));
+
+        // RET f  (5/2 M-cycles)
+        for i in (0xC0..=0xD8).step_by(8) {
+            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                if cpu.test_condition_code(i - 0xC0) {
+                    cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+                    cpu.stack_pointer += 2;
+                }
+            }));
+        }
+
+        // RETI  (4 M-cycles)
+        cpu.instructions[0xD9] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.ime = true;
+            cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+            cpu.stack_pointer += 2;
+        }));
+
+        // RST n  (4 M-cycles)
+        for i in (0xC7..=0xFF).step_by(8) {
+            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                cpu.call(i - 0xC7);
+            }));
+        }
 
         cpu
     }
@@ -1094,7 +1181,7 @@ impl CPU {
             Immediate_u16 => {
                 let pc_value = self.program_counter;
                 self.program_counter += 2;
-                Some(self.get_memory_ref_pair(pc_value + 1, pc_value + 2))
+                Some(self.get_memory_ref_pair(pc_value, pc_value + 1))
             }
         }
     }
@@ -1187,6 +1274,19 @@ impl CPU {
         return (self.register_f & 0b00010000) >> 4;
     }
 
+    fn test_condition_code(&self, code: u8) -> bool {
+        let is_zero = 0b10000000 & self.register_f != 0;
+        let is_carry = 0b00010000 & self.register_f != 0;
+        match code {
+            0 => !is_zero,
+            8 => is_zero,
+            16 => !is_carry,
+            24 => is_carry,
+            _ => false,
+        }
+    }
+
+    // Instruction helpers
     fn push(&mut self, op: Operand_u16) {
         let sp_value = self.stack_pointer;
         let source_option = self.get_operand_pair(op);
@@ -1319,6 +1419,17 @@ impl CPU {
         self.stack_pointer -= 2;
         self.write_u16(self.stack_pointer, self.program_counter);
         self.program_counter = address;
+    }
+
+    fn jr(&mut self) {
+        let mut displacement = *self.get_operand(Immediate).unwrap() as u8;
+        let mut pc = Wrapping(self.program_counter);
+        if (0x80 & displacement) >> 7 == 1 {
+            pc -= (!displacement + 1) as u16;
+        } else {
+            pc += displacement as u16;
+        }
+        self.program_counter = pc.0;
     }
 }
 
@@ -2709,5 +2820,152 @@ mod tests {
         // NOP just for delay
         cpu.run_test(vec![0x00]);
         assert_eq!(cpu.register_a, 0xFF);
+    }
+
+    #[test]
+    fn jp_nn() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xC3, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 0x8800);
+    }
+
+    #[test]
+    fn jp_hl() {
+        let mut cpu = CPU::new();
+        cpu.register_h = 0xff;
+        cpu.run_test(vec![0xE9]);
+        assert_eq!(
+            cpu.program_counter,
+            CPU::combine_bytes(cpu.register_h, cpu.register_l)
+        );
+    }
+
+    #[test]
+    fn jp_z_nn_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.run_test(vec![0xCA, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 0x8800);
+    }
+
+    #[test]
+    fn jp_z_nn_is_not_zero() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00000000;
+        cpu.run_test(vec![0xCA, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 259);
+    }
+
+    #[test]
+    fn jp_nz_nn_is_not_zero() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00000000;
+        cpu.run_test(vec![0xC2, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 0x8800);
+    }
+
+    #[test]
+    fn jp_nc_nn_does_not_have_carry() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00000000;
+        cpu.run_test(vec![0xD2, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 0x8800);
+    }
+
+    #[test]
+    fn jp_c_nn_does_not_have_carry() {
+        let mut cpu = CPU::new();
+        cpu.register_f = 0b00000000;
+        cpu.run_test(vec![0xDA, 0x00, 0x88]);
+        assert_eq!(cpu.program_counter, 259);
+    }
+
+    #[test]
+    fn jr_5_initial_pc_is_zero() {
+        let mut cpu = CPU::new();
+        cpu.program_counter = 0;
+        cpu.run_test(vec![0x18, 0x03]);
+        assert_eq!(cpu.program_counter, 5);
+    }
+
+    #[test]
+    fn jr_5_initial_pc_is_unchanged() {
+        let mut cpu = CPU::new();
+        let initial_pc = cpu.program_counter;
+        cpu.run_test(vec![0x18, 0x03]);
+        assert_eq!(cpu.program_counter, initial_pc + 5);
+    }
+
+    #[test]
+    fn jr_negative_3() {
+        let mut cpu = CPU::new();
+        // 1: jr 5       (jumps to line 4)
+        // 2: ld a, b    (a := b = 0) only runs if line 4 is correct
+        // 3: jr 5       (jumps ahead to end execution)
+        // 4: jr -3      (jumps to line 2)
+        cpu.run_test(vec![0x18, 0x03, 0x78, 0x18, 0x03, 0x18, 0xFB]);
+        assert_eq!(cpu.register_a, 0);
+    }
+
+    #[test]
+    fn jr_129_upper_limit() {
+        let mut cpu = CPU::new();
+        let initial_pc = cpu.program_counter;
+        cpu.run_test(vec![0x18, 0x7F]);
+        assert_eq!(cpu.program_counter, initial_pc + 129);
+    }
+
+    #[test]
+    fn jr_negative_126_lower_limit() {
+        let mut cpu = CPU::new();
+        cpu.program_counter = 0;
+        cpu.run_test(vec![0x18, 0x80]);
+        assert_eq!(cpu.program_counter, 0xFFFF - 125);
+    }
+
+    #[test]
+    fn call_nn() {
+        let mut cpu = CPU::new();
+        let initial_sp = cpu.stack_pointer;
+        cpu.run_test(vec![0xCD, 0x00, 0xFF]);
+        assert_eq!(cpu.program_counter, 0xFF00);
+        assert_eq!(cpu.stack_pointer, initial_sp - 2);
+    }
+
+    #[test]
+    fn ret() {
+        let mut cpu = CPU::new();
+        let initial_sp = cpu.stack_pointer;
+        // Write the program
+        // ld a, b
+        // ret
+        // to address 0x0010
+        cpu.write(0x0010, 0x78);
+        cpu.write(0x0011, 0xC9);
+        cpu.run_test(vec![0xCD, 0x10, 0x00]);
+        assert_eq!(cpu.program_counter, 0x0103);
+        assert_eq!(cpu.stack_pointer, initial_sp);
+        assert_eq!(cpu.register_a, 0);
+    }
+
+    #[test]
+    fn reti() {
+        let mut cpu = CPU::new();
+        let initial_sp = cpu.stack_pointer;
+        cpu.write(0x0010, 0x78);
+        cpu.write(0x0011, 0xD9);
+        cpu.run_test(vec![0xCD, 0x10, 0x00]);
+        assert_eq!(cpu.program_counter, 0x0103);
+        assert_eq!(cpu.stack_pointer, initial_sp);
+        assert_eq!(cpu.register_a, 0);
+        assert_eq!(cpu.ime, true);
+    }
+
+    #[test]
+    fn rst_38() {
+        let mut cpu = CPU::new();
+        cpu.write(0x0038, 0x78);
+        cpu.write(0x0039, 0xC9);
+        cpu.run_test(vec![0xFF]);
+        assert_eq!(cpu.register_a, 0);
     }
 }
