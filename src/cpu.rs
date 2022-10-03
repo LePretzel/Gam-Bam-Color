@@ -2,7 +2,7 @@ use std::collections::VecDeque;
 use std::{fs, num::Wrapping, rc::Rc};
 
 use crate::cpu::Operand::{Immediate, Indirect, Register};
-use crate::cpu::Operand_u16::{Immediate_u16, RegisterPair};
+use crate::cpu::OperandU16::{ImmediateU16, RegisterPair};
 use crate::memory::Memory;
 
 enum Operand {
@@ -11,9 +11,9 @@ enum Operand {
     Immediate,
 }
 
-enum Operand_u16 {
+enum OperandU16 {
     RegisterPair(u8),
-    Immediate_u16,
+    ImmediateU16,
 }
 
 type Instruction = Rc<dyn Fn(&mut CPU) -> ()>;
@@ -62,964 +62,7 @@ impl CPU {
             ei_queue: VecDeque::new(),
         };
 
-        // 8-bit LD instructions
-        // LD r, r'  (1 M-cycles)
-        for i in 0..8 {
-            for j in 0..8 {
-                let source_num = j as u8;
-                let dest_num = i as u8;
-                let opcode: u8 = 0b01000000 | source_num | (dest_num << 3);
-
-                cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                    let source_option = cpu.get_register(source_num);
-                    if source_option.is_some() {
-                        let source = *source_option.unwrap();
-                        let dest_option = cpu.get_register(dest_num);
-                        if dest_option.is_some() {
-                            let dest = dest_option.unwrap();
-                            *dest = source;
-                        }
-                    }
-                }));
-            }
-        }
-
-        // LD r, n  (2 M-cycles)
-        for i in 0..8 {
-            let dest_num = i as u8;
-            let opcode = 0b00000110 | (dest_num << 3);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source = cpu.read(cpu.program_counter);
-                cpu.program_counter += 1;
-                let dest_option = cpu.get_register(dest_num);
-                if let Some(dest) = dest_option {
-                    *dest = source;
-                }
-            }));
-        }
-
-        // LD r, (HL)  (2 M-cycles)
-        for i in 0..8 {
-            let dest_num = i as u8;
-            let opcode = 0b01000110 | (dest_num << 3);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-                let dest_option = cpu.get_register(dest_num);
-                if let Some(dest) = dest_option {
-                    *dest = source;
-                }
-            }));
-        }
-
-        // LD (HL), r  (2 M-cycles)
-        for i in 0..8 {
-            let source_num = i as u8;
-            let opcode = 0b01110000 | source_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source_option = cpu.get_register(source_num);
-                if let Some(source_reg) = source_option {
-                    let source = *source_reg;
-                    cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
-                }
-            }));
-        }
-
-        // LD (HL), n  (3 M-cycles)
-        cpu.instructions[0b00110110] = Some(Rc::new(|cpu: &mut CPU| {
-            let source = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
-        }));
-
-        // LD A, (BC)  (2 M-cycles)
-        cpu.instructions[0x0A] = Some(Rc::new(|cpu: &mut CPU| {
-            let source = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
-            cpu.register_a = source;
-        }));
-
-        // LD A, (DE)  (2 M-cycles)
-        cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
-            let source = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
-            cpu.register_a = source;
-        }));
-
-        // LD (BC), A  (2 M-cycles)
-        cpu.instructions[0x02] = Some(Rc::new(|cpu: &mut CPU| {
-            cpu.write(
-                CPU::combine_bytes(cpu.register_b, cpu.register_b),
-                cpu.register_a,
-            );
-        }));
-
-        // LD (DE), A  (2 M-cycles)
-        cpu.instructions[0x12] = Some(Rc::new(|cpu: &mut CPU| {
-            cpu.write(
-                CPU::combine_bytes(cpu.register_d, cpu.register_e),
-                cpu.register_a,
-            );
-        }));
-
-        // LD A, (nn)  (4 M-cycles)
-        cpu.instructions[0xFA] = Some(Rc::new(|cpu: &mut CPU| {
-            let low = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let high = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.register_a = cpu.read(CPU::combine_bytes(high, low));
-        }));
-
-        // LD (nn), A  (4 M-cycles)
-        cpu.instructions[0xEA] = Some(Rc::new(|cpu: &mut CPU| {
-            let low = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let high = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.write(CPU::combine_bytes(high, low), cpu.register_a);
-        }));
-
-        // LDH A, C  (2 M-cycles)
-        cpu.instructions[0xF2] = Some(Rc::new(|cpu: &mut CPU| {
-            cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
-        }));
-
-        // LDH C, A  (2 M-cycles)
-        cpu.instructions[0xE2] = Some(Rc::new(|cpu: &mut CPU| {
-            cpu.write(CPU::combine_bytes(0xFF, cpu.register_c), cpu.register_a);
-        }));
-
-        // LDH A, n  (3 M-cycles)
-        cpu.instructions[0xF0] = Some(Rc::new(|cpu: &mut CPU| {
-            let low_byte = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, low_byte));
-        }));
-
-        // LDH n, A  (3 M-cycles)
-        cpu.instructions[0xE0] = Some(Rc::new(|cpu: &mut CPU| {
-            let low_byte = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.write(CPU::combine_bytes(0xFF, low_byte), cpu.register_a);
-        }));
-
-        // LDI A (HL)  (2 M-cycles)
-        cpu.instructions[0x2A] = Some(Rc::new(|cpu: &mut CPU| {
-            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-            cpu.register_a = cpu.read(hl);
-            hl += 1;
-            cpu.register_h = (hl >> 8) as u8;
-            cpu.register_l = hl as u8
-        }));
-
-        // LDI (HL) A  (2 M-cycles)
-        cpu.instructions[0x22] = Some(Rc::new(|cpu: &mut CPU| {
-            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-            cpu.write(hl, cpu.register_a);
-            hl += 1;
-            cpu.register_h = (hl >> 8) as u8;
-            cpu.register_l = hl as u8
-        }));
-
-        // LDD A (HL)  (2 M-cycles)
-        cpu.instructions[0x3A] = Some(Rc::new(|cpu: &mut CPU| {
-            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-            cpu.register_a = cpu.read(hl);
-            hl -= 1;
-            cpu.register_h = (hl >> 8) as u8;
-            cpu.register_l = hl as u8
-        }));
-
-        // LDD (HL) A  (2 M-cycles)
-        cpu.instructions[0x32] = Some(Rc::new(|cpu: &mut CPU| {
-            let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-            cpu.write(hl, cpu.register_a);
-            hl -= 1;
-            cpu.register_h = (hl >> 8) as u8;
-            cpu.register_l = hl as u8
-        }));
-
-        // 16-bit LD instructions
-        // LD rr, nn  (3 M-cycles)
-        // combined registers version
-        for i in 0..3 {
-            let dest_num = i as u8;
-            let opcode = 0b00000001 | (dest_num << 4);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let source = cpu.read_u16(cpu.program_counter);
-                cpu.program_counter += 2;
-                let dest_option = cpu.get_register_pair(dest_num);
-                if let Some(dest) = dest_option {
-                    *dest.0 = (source >> 8) as u8;
-                    *dest.1 = source as u8;
-                }
-            }));
-        }
-        // stack_pointer version
-        cpu.instructions[0x31] = Some(Rc::new(move |cpu: &mut CPU| {
-            let source = cpu.read_u16(cpu.program_counter);
-            cpu.program_counter += 2;
-            cpu.stack_pointer = source;
-        }));
-
-        // LD nn SP  (5 M-cycles)
-        cpu.instructions[0x08] = Some(Rc::new(move |cpu: &mut CPU| {
-            let dest = cpu.read_u16(cpu.program_counter);
-            cpu.program_counter += 2;
-            cpu.write_u16(dest, cpu.stack_pointer);
-        }));
-
-        // LD SP HL  (2 M-cycles)
-        cpu.instructions[0xF9] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.stack_pointer = (cpu.register_h as u16) << 8 | cpu.register_l as u16;
-        }));
-
-        // PUSH rr  (4 M-cycles)
-        for i in 0..4 {
-            let source_num = i as u8;
-            let opcode = 0b11000101 | (source_num << 4);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                cpu.push(RegisterPair(source_num));
-            }));
-        }
-
-        // POP rr  (3 M-cycles)
-        for i in 0..4 {
-            let dest_num = i as u8;
-            let opcode = 0b11000001 | (dest_num << 4);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                cpu.pop(RegisterPair(dest_num));
-            }));
-        }
-
-        // 8-bit arithmetic/logic instructions
-        // ADD A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10000000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = *reg;
-                    cpu.update_flags_add(cpu.register_a, reg_value);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    cpu.register_a = sum.0;
-                }
-            }));
-        }
-
-        // ADD A, n  (2 M-cycles)
-        cpu.instructions[0xC6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.update_flags_add(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            cpu.register_a = sum.0;
-        }));
-
-        // ADD A, (HL)  (2 M-cycles)
-        cpu.instructions[0x86] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            cpu.update_flags_add(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            cpu.register_a = sum.0;
-        }));
-
-        // ADC A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10001000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = *reg;
-                    let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-                    cpu.update_flags_add(cpu.register_a, reg_value + carry_bit);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    sum += carry_bit;
-                    cpu.register_a = sum.0;
-                }
-            }));
-        }
-
-        // ADC A, n  (2 M-cycles)
-        cpu.instructions[0xCE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum += carry_bit;
-            cpu.register_a = sum.0;
-        }));
-
-        // ADC A, (HL)  (2 M-cycles)
-        cpu.instructions[0x8E] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum += carry_bit;
-            cpu.register_a = sum.0;
-        }));
-
-        // SUB A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10010000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = CPU::negate(*reg);
-                    cpu.update_flags_sub(cpu.register_a, reg_value);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    cpu.register_a = sum.0;
-                }
-            }));
-        }
-
-        // SUB A, n  (2 M-cycles)
-        cpu.instructions[0xD6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(cpu.program_counter));
-            cpu.program_counter += 1;
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            cpu.register_a = sum.0;
-        }));
-
-        // SUB A, (HL)  (2 M-cycles)
-        cpu.instructions[0x96] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            cpu.register_a = sum.0;
-        }));
-
-        // SBC A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10011000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = CPU::negate(*reg);
-                    let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-                    cpu.update_flags_sub(cpu.register_a, reg_value);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    sum -= carry_bit;
-                    cpu.register_a = sum.0;
-                }
-            }));
-        }
-
-        // SBC A, n  (2 M-cycles)
-        cpu.instructions[0xDE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(cpu.program_counter));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.program_counter += 1;
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum -= carry_bit;
-            cpu.register_a = sum.0;
-        }));
-
-        // SBC A, (HL)  (2 M-cycles)
-        cpu.instructions[0x9E] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum -= carry_bit;
-            cpu.register_a = sum.0;
-        }));
-
-        // AND A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10100000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let register_value = *reg;
-                    cpu.register_a = cpu.register_a & register_value;
-                    cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
-                }
-            }));
-        }
-
-        // AND A, n  (2 M-cycles)
-        cpu.instructions[0xE6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.register_a = cpu.register_a & arg;
-            cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // AND A, (HL)  (2 M-cycles)
-        cpu.instructions[0xA6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            cpu.register_a = cpu.register_a & arg;
-            cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // XOR A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10101000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let register_value = *reg;
-                    cpu.register_a = cpu.register_a ^ register_value;
-                    cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-                }
-            }));
-        }
-
-        // XOR A, n  (2 M-cycles)
-        cpu.instructions[0xEE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.register_a = cpu.register_a ^ arg;
-            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // XOR A, (HL)  (2 M-cycles)
-        cpu.instructions[0xAE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            cpu.register_a = cpu.register_a ^ arg;
-            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // OR A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10110000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let register_value = *reg;
-                    cpu.register_a = cpu.register_a | register_value;
-                    cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-                }
-            }));
-        }
-
-        // OR A, n  (2 M-cycles)
-        cpu.instructions[0xF6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            cpu.register_a = cpu.register_a | arg;
-            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // OR A, (HL)  (2 M-cycles)
-        cpu.instructions[0xB6] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            cpu.register_a = cpu.register_a | arg;
-            cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
-        }));
-
-        // CP A, r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b10111000 | register_num;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = CPU::negate(*reg);
-                    cpu.update_flags_sub(cpu.register_a, reg_value);
-                }
-            }));
-        }
-
-        // CP A, n  (2 M-cycles)
-        cpu.instructions[0xFE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(cpu.program_counter));
-            cpu.program_counter += 1;
-            cpu.update_flags_sub(cpu.register_a, arg);
-        }));
-
-        // CP A, (HL)  (2 M-cycles)
-        cpu.instructions[0xBE] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-            cpu.update_flags_sub(cpu.register_a, arg);
-        }));
-
-        // INC r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b00000100 | register_num << 3;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let initial_carry_bit = 0b00010000 & cpu.register_f;
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = *reg;
-                    let mut sum = Wrapping(reg_value);
-                    sum += 1;
-                    *reg = sum.0;
-                    cpu.update_flags_add(reg_value, 1);
-                    cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
-                }
-            }));
-        }
-
-        // INC (HL)  (3 M-cycles)
-        cpu.instructions[0x34] = Some(Rc::new(move |cpu: &mut CPU| {
-            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            let initial_carry_bit = 0b00010000 & cpu.register_f;
-            let mut sum = Wrapping(initial_value);
-            sum += 1;
-            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
-            cpu.update_flags_add(cpu.register_a, 1);
-            cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
-        }));
-
-        // DEC r  (1 M-cycles)
-        for i in 0..8 {
-            let register_num = i as u8;
-            let opcode = 0b00000101 | register_num << 3;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let initial_carry_bit = 0b00010000 & cpu.register_f;
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = *reg;
-                    let mut sum = Wrapping(reg_value);
-                    sum -= 1;
-                    *reg = sum.0;
-                    cpu.update_flags_sub(cpu.register_a, 1);
-                    cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
-                }
-            }));
-        }
-
-        // DEC  (HL)  (3 M-cycles)
-        cpu.instructions[0x35] = Some(Rc::new(move |cpu: &mut CPU| {
-            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            let initial_carry_bit = 0b00010000 & cpu.register_f;
-            let mut sum = Wrapping(initial_value);
-            sum -= 1;
-            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
-            cpu.update_flags_sub(cpu.register_a, 1);
-            cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
-        }));
-
-        // DAA  (1 M-cycles)
-        cpu.instructions[0x27] = Some(Rc::new(move |cpu: &mut CPU| {
-            let low = 0b00001111 & cpu.register_a;
-            let half_carry_flag = (0b00100000 & cpu.register_f) >> 5;
-            let mut sum = Wrapping(cpu.register_a);
-            if low > 9 || half_carry_flag == 1 {
-                sum += 0x06;
-            }
-            let high = sum >> 4;
-            let carry_flag = (0b00010000 & cpu.register_f) >> 4;
-            cpu.register_f = cpu.register_f & 0b11001111;
-            if high.0 > 9 || carry_flag == 1 {
-                sum += 0x60;
-                cpu.register_f = cpu.register_f | 0b00010000;
-            }
-            cpu.register_a = sum.0;
-            if cpu.register_a == 0 {
-                cpu.register_f = cpu.register_f | 0b10000000;
-            } else {
-                cpu.register_f = cpu.register_f & 0b01111111;
-            }
-        }));
-
-        // CPL  (1 M-cycles)
-        cpu.instructions[0x2F] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.register_a = cpu.register_a ^ 0xFF;
-            cpu.register_f = cpu.register_f | 0b01100000;
-        }));
-
-        // 16-bit arithmetic/logic instructions
-        // ADD Hl, rr  (2 M-cycles)
-        // Combined registers version
-        for i in 0..3 {
-            let register_num = i as u8;
-            let opcode = 0b00001001 | (register_num << 4);
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register_pair(register_num);
-                if let Some((high_reg, low_reg)) = register_option {
-                    let (high_value, low_value) = (*high_reg, *low_reg);
-                    cpu.register_f = cpu.register_f & 0b10111111;
-                    let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-                    cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
-                    sum += CPU::combine_bytes(high_value, low_value);
-                    cpu.register_h = (sum.0 >> 8) as u8;
-                    cpu.register_l = sum.0 as u8;
-                }
-            }));
-        }
-        // Stack pointer version
-        cpu.instructions[0x39] = Some(Rc::new(move |cpu: &mut CPU| {
-            let high_value = (cpu.stack_pointer >> 8) as u8;
-            let low_value = cpu.stack_pointer as u8;
-            cpu.register_f = cpu.register_f & 0b10111111;
-            let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
-            sum += CPU::combine_bytes(high_value, low_value);
-            cpu.register_h = (sum.0 >> 8) as u8;
-            cpu.register_l = sum.0 as u8;
-        }));
-
-        // INC rr  (2 M-cycles)
-        // Combined registers_version
-        for i in 0..3 {
-            let register_num = i as u8;
-            let opcode = 0b00000011 | register_num << 4;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register_pair(register_num);
-                if let Some((high_reg, low_reg)) = register_option {
-                    let (high_value, low_value) = (*high_reg, *low_reg);
-                    let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
-                    sum += 1;
-                    *high_reg = (sum.0 >> 8) as u8;
-                    *low_reg = sum.0 as u8;
-                }
-            }));
-        }
-        // Stack pointer version
-        cpu.instructions[0x33 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum += 1;
-            cpu.stack_pointer = sum.0;
-        }));
-
-        // DEC rr  (2 M-cycles)
-        // Combined registers_version
-        for i in 0..3 {
-            let register_num = i as u8;
-            let opcode = 0b00001011 | register_num << 4;
-
-            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register_pair(register_num);
-                if let Some((high_reg, low_reg)) = register_option {
-                    let (high_value, low_value) = (*high_reg, *low_reg);
-                    let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
-                    sum -= 1;
-                    *high_reg = (sum.0 >> 8) as u8;
-                    *low_reg = sum.0 as u8;
-                }
-            }));
-        }
-        // Stack pointer version
-        cpu.instructions[0x3B as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum -= 1;
-            cpu.stack_pointer = sum.0;
-        }));
-
-        // ADD SP, dd  (4 M-cycles)
-        cpu.instructions[0xE8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum += arg as u16;
-            cpu.stack_pointer = sum.0;
-            cpu.update_flags_add(cpu.program_counter as u8, arg);
-            cpu.register_f = cpu.register_f & 0b00111111;
-        }));
-
-        // LD HL, SP + dd  (3 M-cycles)
-        cpu.instructions[0xF8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum += arg as u16;
-            cpu.register_h = (sum.0 >> 8) as u8;
-            cpu.register_l = sum.0 as u8;
-            cpu.update_flags_add(cpu.program_counter as u8, arg);
-            cpu.register_f = cpu.register_f & 0b00111111;
-        }));
-
-        // Rotate and shift instructions
-        // RLCA  (1 M-cycles)
-        cpu.instructions[0x07 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rlc(Register(7));
-            cpu.register_f = cpu.register_f & 0b01111111;
-        }));
-
-        // RLA  (1 M-cycles)
-        cpu.instructions[0x17 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rl(Register(7), cpu.get_carry_bit());
-            cpu.register_f = cpu.register_f & 0b01111111;
-        }));
-
-        // RRCA  (1 M-cycles)
-        cpu.instructions[0x0F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rrc(Register(7));
-            cpu.register_f = cpu.register_f & 0b01111111;
-        }));
-
-        // RRA  (1 M-cycles)
-        cpu.instructions[0x1F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.rr(Register(7), cpu.get_carry_bit());
-            cpu.register_f = cpu.register_f & 0b01111111;
-        }));
-
-        // All 0xCB instructions
-        cpu.instructions[0xCB as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let arg_high_nibble = (arg & 0b11110000) >> 4;
-            let arg_low_nibble = arg & 0b00001111;
-
-            match arg_high_nibble {
-                0 => match arg_low_nibble {
-                    6 => {
-                        // RLC (HL)  (4 M-cycles)
-                        cpu.rlc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    0xE => {
-                        // RRC (HL)  (4 M-cycles)
-                        cpu.rrc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    // RLC r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.rlc(Register(reg_num)),
-
-                    // RRC r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.rrc(Register(reg_num - 8)),
-                    _ => (),
-                },
-                1 => match arg_low_nibble {
-                    6 => {
-                        // RL (HL)  (4 M-cycles)
-                        cpu.rl(
-                            Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
-                            cpu.get_carry_bit(),
-                        );
-                    }
-                    0xE => {
-                        // RR (HL)  (4 M-cycles)
-                        cpu.rr(
-                            Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
-                            cpu.get_carry_bit(),
-                        );
-                    }
-                    // RL r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.rl(Register(reg_num), cpu.get_carry_bit()),
-
-                    // RR r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.rr(Register(reg_num - 8), cpu.get_carry_bit()),
-                    _ => (),
-                },
-                2 => match arg_low_nibble {
-                    6 => {
-                        // SLA (HL)  (4 M-cycles)
-                        cpu.sla(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    0xE => {
-                        // SRA (HL)  (4 M-cycles)
-                        cpu.sra(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    // SLA r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.sla(Register(reg_num)),
-                    // SRA r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.sra(Register(reg_num - 8)),
-                    _ => (),
-                },
-                3 => match arg_low_nibble {
-                    6 => {
-                        // SWAP (HL)  (4 M-cycles)
-                        cpu.swap(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    0xE => {
-                        // SRL (HL)  (4 M-cycles)
-                        cpu.srl(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-                    }
-                    // SWAP r  (2 M-cycles)
-                    reg_num @ 0..=7 => cpu.swap(Register(reg_num)),
-                    // SRL r  (2 M-cycles)
-                    reg_num @ 8..=0xF => cpu.srl(Register(reg_num - 8)),
-                    _ => (),
-                },
-                4..=7 => {
-                    let bit_num = (arg & 0b00111000) >> 3;
-                    let reg_num = arg & 0b00000111;
-                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-                    match arg_low_nibble {
-                        // BIT n, r  (2 M-cycles)
-                        6 | 0xE => cpu.bit(bit_num, Indirect(hl)),
-                        // BIT n, (hl)  (3 M-cycles)
-                        _ => cpu.bit(bit_num, Register(reg_num)),
-                    }
-                }
-                8..=0xB => {
-                    let bit_num = (arg & 0b00111000) >> 3;
-                    let reg_num = arg & 0b00000111;
-                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-                    match arg_low_nibble {
-                        // RES n, r  (2 M-cycles)
-                        6 | 0xE => cpu.res(bit_num, Indirect(hl)),
-                        // RES n, (hl)  (4 M-cycles)
-                        _ => cpu.res(bit_num, Register(reg_num)),
-                    }
-                }
-                0xC..=0xF => {
-                    let bit_num = (arg & 0b00111000) >> 3;
-                    let reg_num = arg & 0b00000111;
-                    let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-                    match arg_low_nibble {
-                        // SET n, r  (2 M-cycles)
-                        6 | 0xE => cpu.set(bit_num, Indirect(hl)),
-                        // SET n, (hl)  (4 M-cycles)
-                        _ => cpu.set(bit_num, Register(reg_num)),
-                    }
-                }
-                _ => {}
-            }
-        }));
-
-        // CPU control instructions
-        // CCF  (1 M-cycles)
-        cpu.instructions[0x3F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            let carry_flag = !(cpu.register_f | 0b11101111);
-            cpu.register_f = cpu.register_f & 0b10000000 | carry_flag;
-        }));
-
-        // SCF  (1 M-cycles)
-        cpu.instructions[0x37 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.register_f = cpu.register_f & 0b10000000 | 0b00010000;
-        }));
-
-        // NOP  (1 M-cycles)
-        cpu.instructions[0x00 as usize] = Some(Rc::new(move |cpu: &mut CPU| {}));
-
-        // HALT  (N M-cycles)
-        cpu.instructions[0x76] = Some(Rc::new(move |cpu: &mut CPU| {
-            // Halt bug not implemented yet
-            cpu.halted = true;
-        }));
-
-        // STOP  (N M-cycles)
-        //todo!("stop");
-
-        // DI (1 M-cycles)
-        cpu.instructions[0xF3] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.ei_queue.clear();
-            cpu.ei_queue.push_back(Some(false));
-        }));
-
-        // EI (1 M-cycles)
-        cpu.instructions[0xFB] = Some(Rc::new(move |cpu: &mut CPU| {
-            // Push a None first to emulate the instruction delay of EI
-            cpu.ei_queue.push_back(None);
-            cpu.ei_queue.push_back(Some(true));
-        }));
-
-        // Jump instructions
-        // JP nn  (4 M-cycles)
-        cpu.instructions[0xC3] = Some(Rc::new(move |cpu: &mut CPU| {
-            let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
-            cpu.program_counter = CPU::combine_bytes(*high, *low);
-        }));
-
-        // JP HL  (1 M-cycles)
-        cpu.instructions[0xE9] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.program_counter = CPU::combine_bytes(cpu.register_h, cpu.register_l);
-        }));
-
-        // JP f, nn  (4/3 M-cycles)
-        for i in (0xC2..=0xDA).step_by(8) {
-            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                if cpu.test_condition_code(i - 0xC2) {
-                    let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
-                    cpu.program_counter = CPU::combine_bytes(*high, *low);
-                }
-            }));
-        }
-
-        // JR PC+dd  (3 M-cycles)
-        cpu.instructions[0x18] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.jr();
-        }));
-
-        // JR f, PC+dd  (3/2 M-cycles)
-        for i in (0x20..=0x38).step_by(8) {
-            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                if cpu.test_condition_code(i - 0x20) {
-                    cpu.jr();
-                }
-            }));
-        }
-
-        // CALL nn  (6 M-cycles)
-        cpu.instructions[0xCD] = Some(Rc::new(move |cpu: &mut CPU| {
-            let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
-            let (high_value, low_value) = (*high, *low);
-            cpu.call(CPU::combine_bytes(high_value, low_value));
-        }));
-
-        // CALL f, nn  (6/3 M-cycles)
-        for i in (0xC4..=0xDC).step_by(8) {
-            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                if cpu.test_condition_code(i - 0xC4) {
-                    let (high, low) = cpu.get_operand_pair(Immediate_u16).unwrap();
-                    let (high_value, low_value) = (*high, *low);
-                    cpu.call(CPU::combine_bytes(high_value, low_value));
-                }
-            }));
-        }
-
-        // RET  (4 M-cycles)
-        cpu.instructions[0xC9] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
-            cpu.stack_pointer += 2;
-        }));
-
-        // RET f  (5/2 M-cycles)
-        for i in (0xC0..=0xD8).step_by(8) {
-            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                if cpu.test_condition_code(i - 0xC0) {
-                    cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
-                    cpu.stack_pointer += 2;
-                }
-            }));
-        }
-
-        // RETI  (4 M-cycles)
-        cpu.instructions[0xD9] = Some(Rc::new(move |cpu: &mut CPU| {
-            cpu.ime = true;
-            cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
-            cpu.stack_pointer += 2;
-        }));
-
-        // RST n  (4 M-cycles)
-        for i in (0xC7..=0xFF).step_by(8) {
-            cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
-                cpu.call(i - 0xC7);
-            }));
-        }
+        map_instructions(&mut cpu);
 
         cpu
     }
@@ -1175,10 +218,10 @@ impl CPU {
         }
     }
 
-    fn get_operand_pair(&mut self, op: Operand_u16) -> Option<(&mut u8, &mut u8)> {
+    fn get_operand_pair(&mut self, op: OperandU16) -> Option<(&mut u8, &mut u8)> {
         match op {
             RegisterPair(r) => self.get_register_pair(r),
-            Immediate_u16 => {
+            ImmediateU16 => {
                 let pc_value = self.program_counter;
                 self.program_counter += 2;
                 Some(self.get_memory_ref_pair(pc_value, pc_value + 1))
@@ -1287,7 +330,7 @@ impl CPU {
     }
 
     // Instruction helpers
-    fn push(&mut self, op: Operand_u16) {
+    fn push(&mut self, op: OperandU16) {
         let sp_value = self.stack_pointer;
         let source_option = self.get_operand_pair(op);
         if let Some((high, low)) = source_option {
@@ -1297,7 +340,7 @@ impl CPU {
         }
     }
 
-    fn pop(&mut self, op: Operand_u16) {
+    fn pop(&mut self, op: OperandU16) {
         let sp_value = self.stack_pointer;
         let source = self.read_u16(sp_value);
         let dest_option = self.get_operand_pair(op);
@@ -1422,7 +465,7 @@ impl CPU {
     }
 
     fn jr(&mut self) {
-        let mut displacement = *self.get_operand(Immediate).unwrap() as u8;
+        let displacement = *self.get_operand(Immediate).unwrap() as u8;
         let mut pc = Wrapping(self.program_counter);
         if (0x80 & displacement) >> 7 == 1 {
             pc -= (!displacement + 1) as u16;
@@ -1468,6 +511,967 @@ impl Memory for CPU {
         let upper_byte = &mut upper[0];
         let lower_byte = &mut lower[address1 as usize];
         (upper_byte, lower_byte)
+    }
+}
+
+fn map_instructions(cpu: &mut CPU) {
+    // 8-bit LD instructions
+    // LD r, r'  (1 M-cycles)
+    for i in 0..8 {
+        for j in 0..8 {
+            let source_num = j as u8;
+            let dest_num = i as u8;
+            let opcode: u8 = 0b01000000 | source_num | (dest_num << 3);
+
+            cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+                let source_option = cpu.get_register(source_num);
+                if source_option.is_some() {
+                    let source = *source_option.unwrap();
+                    let dest_option = cpu.get_register(dest_num);
+                    if dest_option.is_some() {
+                        let dest = dest_option.unwrap();
+                        *dest = source;
+                    }
+                }
+            }));
+        }
+    }
+
+    // LD r, n  (2 M-cycles)
+    for i in 0..8 {
+        let dest_num = i as u8;
+        let opcode = 0b00000110 | (dest_num << 3);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let source = cpu.read(cpu.program_counter);
+            cpu.program_counter += 1;
+            let dest_option = cpu.get_register(dest_num);
+            if let Some(dest) = dest_option {
+                *dest = source;
+            }
+        }));
+    }
+
+    // LD r, (HL)  (2 M-cycles)
+    for i in 0..8 {
+        let dest_num = i as u8;
+        let opcode = 0b01000110 | (dest_num << 3);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let source = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let dest_option = cpu.get_register(dest_num);
+            if let Some(dest) = dest_option {
+                *dest = source;
+            }
+        }));
+    }
+
+    // LD (HL), r  (2 M-cycles)
+    for i in 0..8 {
+        let source_num = i as u8;
+        let opcode = 0b01110000 | source_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let source_option = cpu.get_register(source_num);
+            if let Some(source_reg) = source_option {
+                let source = *source_reg;
+                cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
+            }
+        }));
+    }
+
+    // LD (HL), n  (3 M-cycles)
+    cpu.instructions[0b00110110] = Some(Rc::new(|cpu: &mut CPU| {
+        let source = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), source);
+    }));
+
+    // LD A, (BC)  (2 M-cycles)
+    cpu.instructions[0x0A] = Some(Rc::new(|cpu: &mut CPU| {
+        let source = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
+        cpu.register_a = source;
+    }));
+
+    // LD A, (DE)  (2 M-cycles)
+    cpu.instructions[0x1A] = Some(Rc::new(|cpu: &mut CPU| {
+        let source = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
+        cpu.register_a = source;
+    }));
+
+    // LD (BC), A  (2 M-cycles)
+    cpu.instructions[0x02] = Some(Rc::new(|cpu: &mut CPU| {
+        cpu.write(
+            CPU::combine_bytes(cpu.register_b, cpu.register_b),
+            cpu.register_a,
+        );
+    }));
+
+    // LD (DE), A  (2 M-cycles)
+    cpu.instructions[0x12] = Some(Rc::new(|cpu: &mut CPU| {
+        cpu.write(
+            CPU::combine_bytes(cpu.register_d, cpu.register_e),
+            cpu.register_a,
+        );
+    }));
+
+    // LD A, (nn)  (4 M-cycles)
+    cpu.instructions[0xFA] = Some(Rc::new(|cpu: &mut CPU| {
+        let low = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let high = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.register_a = cpu.read(CPU::combine_bytes(high, low));
+    }));
+
+    // LD (nn), A  (4 M-cycles)
+    cpu.instructions[0xEA] = Some(Rc::new(|cpu: &mut CPU| {
+        let low = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let high = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.write(CPU::combine_bytes(high, low), cpu.register_a);
+    }));
+
+    // LDH A, C  (2 M-cycles)
+    cpu.instructions[0xF2] = Some(Rc::new(|cpu: &mut CPU| {
+        cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
+    }));
+
+    // LDH C, A  (2 M-cycles)
+    cpu.instructions[0xE2] = Some(Rc::new(|cpu: &mut CPU| {
+        cpu.write(CPU::combine_bytes(0xFF, cpu.register_c), cpu.register_a);
+    }));
+
+    // LDH A, n  (3 M-cycles)
+    cpu.instructions[0xF0] = Some(Rc::new(|cpu: &mut CPU| {
+        let low_byte = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.register_a = cpu.read(CPU::combine_bytes(0xFF, low_byte));
+    }));
+
+    // LDH n, A  (3 M-cycles)
+    cpu.instructions[0xE0] = Some(Rc::new(|cpu: &mut CPU| {
+        let low_byte = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.write(CPU::combine_bytes(0xFF, low_byte), cpu.register_a);
+    }));
+
+    // LDI A (HL)  (2 M-cycles)
+    cpu.instructions[0x2A] = Some(Rc::new(|cpu: &mut CPU| {
+        let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.register_a = cpu.read(hl);
+        hl += 1;
+        cpu.register_h = (hl >> 8) as u8;
+        cpu.register_l = hl as u8
+    }));
+
+    // LDI (HL) A  (2 M-cycles)
+    cpu.instructions[0x22] = Some(Rc::new(|cpu: &mut CPU| {
+        let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, cpu.register_a);
+        hl += 1;
+        cpu.register_h = (hl >> 8) as u8;
+        cpu.register_l = hl as u8
+    }));
+
+    // LDD A (HL)  (2 M-cycles)
+    cpu.instructions[0x3A] = Some(Rc::new(|cpu: &mut CPU| {
+        let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.register_a = cpu.read(hl);
+        hl -= 1;
+        cpu.register_h = (hl >> 8) as u8;
+        cpu.register_l = hl as u8
+    }));
+
+    // LDD (HL) A  (2 M-cycles)
+    cpu.instructions[0x32] = Some(Rc::new(|cpu: &mut CPU| {
+        let mut hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+        cpu.write(hl, cpu.register_a);
+        hl -= 1;
+        cpu.register_h = (hl >> 8) as u8;
+        cpu.register_l = hl as u8
+    }));
+
+    // 16-bit LD instructions
+    // LD rr, nn  (3 M-cycles)
+    // combined registers version
+    for i in 0..3 {
+        let dest_num = i as u8;
+        let opcode = 0b00000001 | (dest_num << 4);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let source = cpu.read_u16(cpu.program_counter);
+            cpu.program_counter += 2;
+            let dest_option = cpu.get_register_pair(dest_num);
+            if let Some(dest) = dest_option {
+                *dest.0 = (source >> 8) as u8;
+                *dest.1 = source as u8;
+            }
+        }));
+    }
+    // stack_pointer version
+    cpu.instructions[0x31] = Some(Rc::new(move |cpu: &mut CPU| {
+        let source = cpu.read_u16(cpu.program_counter);
+        cpu.program_counter += 2;
+        cpu.stack_pointer = source;
+    }));
+
+    // LD nn SP  (5 M-cycles)
+    cpu.instructions[0x08] = Some(Rc::new(move |cpu: &mut CPU| {
+        let dest = cpu.read_u16(cpu.program_counter);
+        cpu.program_counter += 2;
+        cpu.write_u16(dest, cpu.stack_pointer);
+    }));
+
+    // LD SP HL  (2 M-cycles)
+    cpu.instructions[0xF9] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.stack_pointer = (cpu.register_h as u16) << 8 | cpu.register_l as u16;
+    }));
+
+    // PUSH rr  (4 M-cycles)
+    for i in 0..4 {
+        let source_num = i as u8;
+        let opcode = 0b11000101 | (source_num << 4);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.push(RegisterPair(source_num));
+        }));
+    }
+
+    // POP rr  (3 M-cycles)
+    for i in 0..4 {
+        let dest_num = i as u8;
+        let opcode = 0b11000001 | (dest_num << 4);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.pop(RegisterPair(dest_num));
+        }));
+    }
+
+    // 8-bit arithmetic/logic instructions
+    // ADD A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10000000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = *reg;
+                cpu.update_flags_add(cpu.register_a, reg_value);
+                let mut sum = Wrapping(reg_value);
+                sum += cpu.register_a;
+                cpu.register_a = sum.0;
+            }
+        }));
+    }
+
+    // ADD A, n  (2 M-cycles)
+    cpu.instructions[0xC6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.update_flags_add(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        cpu.register_a = sum.0;
+    }));
+
+    // ADD A, (HL)  (2 M-cycles)
+    cpu.instructions[0x86] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        cpu.update_flags_add(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        cpu.register_a = sum.0;
+    }));
+
+    // ADC A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10001000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = *reg;
+                let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+                cpu.update_flags_add(cpu.register_a, reg_value + carry_bit);
+                let mut sum = Wrapping(reg_value);
+                sum += cpu.register_a;
+                sum += carry_bit;
+                cpu.register_a = sum.0;
+            }
+        }));
+    }
+
+    // ADC A, n  (2 M-cycles)
+    cpu.instructions[0xCE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+        cpu.update_flags_add(cpu.register_a, arg + carry_bit);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        sum += carry_bit;
+        cpu.register_a = sum.0;
+    }));
+
+    // ADC A, (HL)  (2 M-cycles)
+    cpu.instructions[0x8E] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+        cpu.update_flags_add(cpu.register_a, arg + carry_bit);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        sum += carry_bit;
+        cpu.register_a = sum.0;
+    }));
+
+    // SUB A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10010000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = CPU::negate(*reg);
+                cpu.update_flags_sub(cpu.register_a, reg_value);
+                let mut sum = Wrapping(reg_value);
+                sum += cpu.register_a;
+                cpu.register_a = sum.0;
+            }
+        }));
+    }
+
+    // SUB A, n  (2 M-cycles)
+    cpu.instructions[0xD6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(cpu.program_counter));
+        cpu.program_counter += 1;
+        cpu.update_flags_sub(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        cpu.register_a = sum.0;
+    }));
+
+    // SUB A, (HL)  (2 M-cycles)
+    cpu.instructions[0x96] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+        cpu.update_flags_sub(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        cpu.register_a = sum.0;
+    }));
+
+    // SBC A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10011000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = CPU::negate(*reg);
+                let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+                cpu.update_flags_sub(cpu.register_a, reg_value);
+                let mut sum = Wrapping(reg_value);
+                sum += cpu.register_a;
+                sum -= carry_bit;
+                cpu.register_a = sum.0;
+            }
+        }));
+    }
+
+    // SBC A, n  (2 M-cycles)
+    cpu.instructions[0xDE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(cpu.program_counter));
+        let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+        cpu.program_counter += 1;
+        cpu.update_flags_sub(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        sum -= carry_bit;
+        cpu.register_a = sum.0;
+    }));
+
+    // SBC A, (HL)  (2 M-cycles)
+    cpu.instructions[0x9E] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+        let carry_bit = (cpu.register_f & 0b00010000) >> 4;
+        cpu.update_flags_sub(cpu.register_a, arg);
+        let mut sum = Wrapping(cpu.register_a);
+        sum += arg;
+        sum -= carry_bit;
+        cpu.register_a = sum.0;
+    }));
+
+    // AND A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10100000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let register_value = *reg;
+                cpu.register_a = cpu.register_a & register_value;
+                cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+            }
+        }));
+    }
+
+    // AND A, n  (2 M-cycles)
+    cpu.instructions[0xE6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.register_a = cpu.register_a & arg;
+        cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // AND A, (HL)  (2 M-cycles)
+    cpu.instructions[0xA6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        cpu.register_a = cpu.register_a & arg;
+        cpu.register_f = 0b00100000 | ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // XOR A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10101000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let register_value = *reg;
+                cpu.register_a = cpu.register_a ^ register_value;
+                cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+            }
+        }));
+    }
+
+    // XOR A, n  (2 M-cycles)
+    cpu.instructions[0xEE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.register_a = cpu.register_a ^ arg;
+        cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // XOR A, (HL)  (2 M-cycles)
+    cpu.instructions[0xAE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        cpu.register_a = cpu.register_a ^ arg;
+        cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // OR A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10110000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let register_value = *reg;
+                cpu.register_a = cpu.register_a | register_value;
+                cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+            }
+        }));
+    }
+
+    // OR A, n  (2 M-cycles)
+    cpu.instructions[0xF6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        cpu.register_a = cpu.register_a | arg;
+        cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // OR A, (HL)  (2 M-cycles)
+    cpu.instructions[0xB6] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        cpu.register_a = cpu.register_a | arg;
+        cpu.register_f = ((cpu.register_a == 0) as u8) << 7;
+    }));
+
+    // CP A, r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b10111000 | register_num;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = CPU::negate(*reg);
+                cpu.update_flags_sub(cpu.register_a, reg_value);
+            }
+        }));
+    }
+
+    // CP A, n  (2 M-cycles)
+    cpu.instructions[0xFE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(cpu.program_counter));
+        cpu.program_counter += 1;
+        cpu.update_flags_sub(cpu.register_a, arg);
+    }));
+
+    // CP A, (HL)  (2 M-cycles)
+    cpu.instructions[0xBE] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+        cpu.update_flags_sub(cpu.register_a, arg);
+    }));
+
+    // INC r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b00000100 | register_num << 3;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let initial_carry_bit = 0b00010000 & cpu.register_f;
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = *reg;
+                let mut sum = Wrapping(reg_value);
+                sum += 1;
+                *reg = sum.0;
+                cpu.update_flags_add(reg_value, 1);
+                cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+            }
+        }));
+    }
+
+    // INC (HL)  (3 M-cycles)
+    cpu.instructions[0x34] = Some(Rc::new(move |cpu: &mut CPU| {
+        let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        let initial_carry_bit = 0b00010000 & cpu.register_f;
+        let mut sum = Wrapping(initial_value);
+        sum += 1;
+        cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
+        cpu.update_flags_add(cpu.register_a, 1);
+        cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+    }));
+
+    // DEC r  (1 M-cycles)
+    for i in 0..8 {
+        let register_num = i as u8;
+        let opcode = 0b00000101 | register_num << 3;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let initial_carry_bit = 0b00010000 & cpu.register_f;
+            let register_option = cpu.get_register(register_num);
+            if let Some(reg) = register_option {
+                let reg_value = *reg;
+                let mut sum = Wrapping(reg_value);
+                sum -= 1;
+                *reg = sum.0;
+                cpu.update_flags_sub(cpu.register_a, 1);
+                cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+            }
+        }));
+    }
+
+    // DEC (HL)  (3 M-cycles)
+    cpu.instructions[0x35] = Some(Rc::new(move |cpu: &mut CPU| {
+        let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        let initial_carry_bit = 0b00010000 & cpu.register_f;
+        let mut sum = Wrapping(initial_value);
+        sum -= 1;
+        cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
+        cpu.update_flags_sub(cpu.register_a, 1);
+        cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
+    }));
+
+    // DAA  (1 M-cycles)
+    cpu.instructions[0x27] = Some(Rc::new(move |cpu: &mut CPU| {
+        let low = 0b00001111 & cpu.register_a;
+        let half_carry_flag = (0b00100000 & cpu.register_f) >> 5;
+        let mut sum = Wrapping(cpu.register_a);
+        if low > 9 || half_carry_flag == 1 {
+            sum += 0x06;
+        }
+        let high = sum >> 4;
+        let carry_flag = (0b00010000 & cpu.register_f) >> 4;
+        cpu.register_f = cpu.register_f & 0b11001111;
+        if high.0 > 9 || carry_flag == 1 {
+            sum += 0x60;
+            cpu.register_f = cpu.register_f | 0b00010000;
+        }
+        cpu.register_a = sum.0;
+        if cpu.register_a == 0 {
+            cpu.register_f = cpu.register_f | 0b10000000;
+        } else {
+            cpu.register_f = cpu.register_f & 0b01111111;
+        }
+    }));
+
+    // CPL  (1 M-cycles)
+    cpu.instructions[0x2F] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.register_a = cpu.register_a ^ 0xFF;
+        cpu.register_f = cpu.register_f | 0b01100000;
+    }));
+
+    // 16-bit arithmetic/logic instructions
+    // ADD Hl, rr  (2 M-cycles)
+    // Combined registers version
+    for i in 0..3 {
+        let register_num = i as u8;
+        let opcode = 0b00001001 | (register_num << 4);
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register_pair(register_num);
+            if let Some((high_reg, low_reg)) = register_option {
+                let (high_value, low_value) = (*high_reg, *low_reg);
+                cpu.register_f = cpu.register_f & 0b10111111;
+                let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+                cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
+                sum += CPU::combine_bytes(high_value, low_value);
+                cpu.register_h = (sum.0 >> 8) as u8;
+                cpu.register_l = sum.0 as u8;
+            }
+        }));
+    }
+    // Stack pointer version
+    cpu.instructions[0x39] = Some(Rc::new(move |cpu: &mut CPU| {
+        let high_value = (cpu.stack_pointer >> 8) as u8;
+        let low_value = cpu.stack_pointer as u8;
+        cpu.register_f = cpu.register_f & 0b10111111;
+        let mut sum = Wrapping(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+        cpu.update_hc_flags_add_u16(sum.0, CPU::combine_bytes(high_value, low_value));
+        sum += CPU::combine_bytes(high_value, low_value);
+        cpu.register_h = (sum.0 >> 8) as u8;
+        cpu.register_l = sum.0 as u8;
+    }));
+
+    // INC rr  (2 M-cycles)
+    // Combined registers_version
+    for i in 0..3 {
+        let register_num = i as u8;
+        let opcode = 0b00000011 | register_num << 4;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register_pair(register_num);
+            if let Some((high_reg, low_reg)) = register_option {
+                let (high_value, low_value) = (*high_reg, *low_reg);
+                let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
+                sum += 1;
+                *high_reg = (sum.0 >> 8) as u8;
+                *low_reg = sum.0 as u8;
+            }
+        }));
+    }
+    // Stack pointer version
+    cpu.instructions[0x33 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let mut sum = Wrapping(cpu.stack_pointer);
+        sum += 1;
+        cpu.stack_pointer = sum.0;
+    }));
+
+    // DEC rr  (2 M-cycles)
+    // Combined registers_version
+    for i in 0..3 {
+        let register_num = i as u8;
+        let opcode = 0b00001011 | register_num << 4;
+
+        cpu.instructions[opcode as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            let register_option = cpu.get_register_pair(register_num);
+            if let Some((high_reg, low_reg)) = register_option {
+                let (high_value, low_value) = (*high_reg, *low_reg);
+                let mut sum = Wrapping(CPU::combine_bytes(high_value, low_value));
+                sum -= 1;
+                *high_reg = (sum.0 >> 8) as u8;
+                *low_reg = sum.0 as u8;
+            }
+        }));
+    }
+    // Stack pointer version
+    cpu.instructions[0x3B as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let mut sum = Wrapping(cpu.stack_pointer);
+        sum -= 1;
+        cpu.stack_pointer = sum.0;
+    }));
+
+    // ADD SP, dd  (4 M-cycles)
+    cpu.instructions[0xE8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let mut sum = Wrapping(cpu.stack_pointer);
+        sum += arg as u16;
+        cpu.stack_pointer = sum.0;
+        cpu.update_flags_add(cpu.program_counter as u8, arg);
+        cpu.register_f = cpu.register_f & 0b00111111;
+    }));
+
+    // LD HL, SP + dd  (3 M-cycles)
+    cpu.instructions[0xF8 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let mut sum = Wrapping(cpu.stack_pointer);
+        sum += arg as u16;
+        cpu.register_h = (sum.0 >> 8) as u8;
+        cpu.register_l = sum.0 as u8;
+        cpu.update_flags_add(cpu.program_counter as u8, arg);
+        cpu.register_f = cpu.register_f & 0b00111111;
+    }));
+
+    // Rotate and shift instructions
+    // RLCA  (1 M-cycles)
+    cpu.instructions[0x07 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.rlc(Register(7));
+        cpu.register_f = cpu.register_f & 0b01111111;
+    }));
+
+    // RLA  (1 M-cycles)
+    cpu.instructions[0x17 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.rl(Register(7), cpu.get_carry_bit());
+        cpu.register_f = cpu.register_f & 0b01111111;
+    }));
+
+    // RRCA  (1 M-cycles)
+    cpu.instructions[0x0F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.rrc(Register(7));
+        cpu.register_f = cpu.register_f & 0b01111111;
+    }));
+
+    // RRA  (1 M-cycles)
+    cpu.instructions[0x1F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.rr(Register(7), cpu.get_carry_bit());
+        cpu.register_f = cpu.register_f & 0b01111111;
+    }));
+
+    // All 0xCB instructions
+    cpu.instructions[0xCB as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let arg = cpu.read(cpu.program_counter);
+        cpu.program_counter += 1;
+        let arg_high_nibble = (arg & 0b11110000) >> 4;
+        let arg_low_nibble = arg & 0b00001111;
+
+        match arg_high_nibble {
+            0 => match arg_low_nibble {
+                6 => {
+                    // RLC (HL)  (4 M-cycles)
+                    cpu.rlc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                0xE => {
+                    // RRC (HL)  (4 M-cycles)
+                    cpu.rrc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                // RLC r  (2 M-cycles)
+                reg_num @ 0..=7 => cpu.rlc(Register(reg_num)),
+
+                // RRC r  (2 M-cycles)
+                reg_num @ 8..=0xF => cpu.rrc(Register(reg_num - 8)),
+                _ => (),
+            },
+            1 => match arg_low_nibble {
+                6 => {
+                    // RL (HL)  (4 M-cycles)
+                    cpu.rl(
+                        Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+                        cpu.get_carry_bit(),
+                    );
+                }
+                0xE => {
+                    // RR (HL)  (4 M-cycles)
+                    cpu.rr(
+                        Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
+                        cpu.get_carry_bit(),
+                    );
+                }
+                // RL r  (2 M-cycles)
+                reg_num @ 0..=7 => cpu.rl(Register(reg_num), cpu.get_carry_bit()),
+
+                // RR r  (2 M-cycles)
+                reg_num @ 8..=0xF => cpu.rr(Register(reg_num - 8), cpu.get_carry_bit()),
+                _ => (),
+            },
+            2 => match arg_low_nibble {
+                6 => {
+                    // SLA (HL)  (4 M-cycles)
+                    cpu.sla(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                0xE => {
+                    // SRA (HL)  (4 M-cycles)
+                    cpu.sra(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                // SLA r  (2 M-cycles)
+                reg_num @ 0..=7 => cpu.sla(Register(reg_num)),
+                // SRA r  (2 M-cycles)
+                reg_num @ 8..=0xF => cpu.sra(Register(reg_num - 8)),
+                _ => (),
+            },
+            3 => match arg_low_nibble {
+                6 => {
+                    // SWAP (HL)  (4 M-cycles)
+                    cpu.swap(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                0xE => {
+                    // SRL (HL)  (4 M-cycles)
+                    cpu.srl(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
+                }
+                // SWAP r  (2 M-cycles)
+                reg_num @ 0..=7 => cpu.swap(Register(reg_num)),
+                // SRL r  (2 M-cycles)
+                reg_num @ 8..=0xF => cpu.srl(Register(reg_num - 8)),
+                _ => (),
+            },
+            4..=7 => {
+                let bit_num = (arg & 0b00111000) >> 3;
+                let reg_num = arg & 0b00000111;
+                let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                match arg_low_nibble {
+                    // BIT n, r  (2 M-cycles)
+                    6 | 0xE => cpu.bit(bit_num, Indirect(hl)),
+                    // BIT n, (hl)  (3 M-cycles)
+                    _ => cpu.bit(bit_num, Register(reg_num)),
+                }
+            }
+            8..=0xB => {
+                let bit_num = (arg & 0b00111000) >> 3;
+                let reg_num = arg & 0b00000111;
+                let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                match arg_low_nibble {
+                    // RES n, r  (2 M-cycles)
+                    6 | 0xE => cpu.res(bit_num, Indirect(hl)),
+                    // RES n, (hl)  (4 M-cycles)
+                    _ => cpu.res(bit_num, Register(reg_num)),
+                }
+            }
+            0xC..=0xF => {
+                let bit_num = (arg & 0b00111000) >> 3;
+                let reg_num = arg & 0b00000111;
+                let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+                match arg_low_nibble {
+                    // SET n, r  (2 M-cycles)
+                    6 | 0xE => cpu.set(bit_num, Indirect(hl)),
+                    // SET n, (hl)  (4 M-cycles)
+                    _ => cpu.set(bit_num, Register(reg_num)),
+                }
+            }
+            _ => {}
+        }
+    }));
+
+    // CPU control instructions
+    // CCF  (1 M-cycles)
+    cpu.instructions[0x3F as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        let carry_flag = !(cpu.register_f | 0b11101111);
+        cpu.register_f = cpu.register_f & 0b10000000 | carry_flag;
+    }));
+
+    // SCF  (1 M-cycles)
+    cpu.instructions[0x37 as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.register_f = cpu.register_f & 0b10000000 | 0b00010000;
+    }));
+
+    // NOP  (1 M-cycles)
+    cpu.instructions[0x00 as usize] = Some(Rc::new(move |_cpu: &mut CPU| {}));
+
+    // HALT  (N M-cycles)
+    cpu.instructions[0x76] = Some(Rc::new(move |cpu: &mut CPU| {
+        // Halt bug not implemented yet
+        cpu.halted = true;
+    }));
+
+    // STOP  (N M-cycles)
+    // todo!("stop");
+
+    // DI (1 M-cycles)
+    cpu.instructions[0xF3] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.ei_queue.clear();
+        cpu.ei_queue.push_back(Some(false));
+    }));
+
+    // EI (1 M-cycles)
+    cpu.instructions[0xFB] = Some(Rc::new(move |cpu: &mut CPU| {
+        // Push a None first to emulate the instruction delay of EI
+        cpu.ei_queue.push_back(None);
+        cpu.ei_queue.push_back(Some(true));
+    }));
+
+    // Jump instructions
+    // JP nn  (4 M-cycles)
+    cpu.instructions[0xC3] = Some(Rc::new(move |cpu: &mut CPU| {
+        let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
+        cpu.program_counter = CPU::combine_bytes(*high, *low);
+    }));
+
+    // JP HL  (1 M-cycles)
+    cpu.instructions[0xE9] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.program_counter = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+    }));
+
+    // JP f, nn  (4/3 M-cycles)
+    for i in (0xC2..=0xDA).step_by(8) {
+        cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            if cpu.test_condition_code(i - 0xC2) {
+                let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
+                cpu.program_counter = CPU::combine_bytes(*high, *low);
+            }
+        }));
+    }
+
+    // JR PC+dd  (3 M-cycles)
+    cpu.instructions[0x18] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.jr();
+    }));
+
+    // JR f, PC+dd  (3/2 M-cycles)
+    for i in (0x20..=0x38).step_by(8) {
+        cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            if cpu.test_condition_code(i - 0x20) {
+                cpu.jr();
+            }
+        }));
+    }
+
+    // CALL nn  (6 M-cycles)
+    cpu.instructions[0xCD] = Some(Rc::new(move |cpu: &mut CPU| {
+        let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
+        let (high_value, low_value) = (*high, *low);
+        cpu.call(CPU::combine_bytes(high_value, low_value));
+    }));
+
+    // CALL f, nn  (6/3 M-cycles)
+    for i in (0xC4..=0xDC).step_by(8) {
+        cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            if cpu.test_condition_code(i - 0xC4) {
+                let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
+                let (high_value, low_value) = (*high, *low);
+                cpu.call(CPU::combine_bytes(high_value, low_value));
+            }
+        }));
+    }
+
+    // RET  (4 M-cycles)
+    cpu.instructions[0xC9] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+        cpu.stack_pointer += 2;
+    }));
+
+    // RET f  (5/2 M-cycles)
+    for i in (0xC0..=0xD8).step_by(8) {
+        cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            if cpu.test_condition_code(i - 0xC0) {
+                cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+                cpu.stack_pointer += 2;
+            }
+        }));
+    }
+
+    // RETI  (4 M-cycles)
+    cpu.instructions[0xD9] = Some(Rc::new(move |cpu: &mut CPU| {
+        cpu.ime = true;
+        cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
+        cpu.stack_pointer += 2;
+    }));
+
+    // RST n  (4 M-cycles)
+    for i in (0xC7..=0xFF).step_by(8) {
+        cpu.instructions[i as usize] = Some(Rc::new(move |cpu: &mut CPU| {
+            cpu.call(i - 0xC7);
+        }));
     }
 }
 
@@ -2254,7 +2258,6 @@ mod tests {
     fn cp_immediate() {
         let mut cpu = CPU::new();
         cpu.run_test(vec![0xFE, 0x08]);
-        let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(cpu.register_f, 0b01100000);
     }
 
