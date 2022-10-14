@@ -1,3 +1,4 @@
+use std::cell::RefCell;
 use std::collections::VecDeque;
 use std::{fs, num::Wrapping, rc::Rc};
 
@@ -5,14 +6,16 @@ use arrayvec::{self, ArrayVec};
 
 use crate::cpu::Operand::{Immediate, Indirect, Register};
 use crate::cpu::OperandU16::{ImmediateU16, RegisterPair};
-use crate::memory::Memory;
+use crate::memory::{MemManager, Memory};
 
+#[derive(Clone, Copy)]
 enum Operand {
     Register(u8),
     Indirect(u16),
     Immediate,
 }
 
+#[derive(Clone, Copy)]
 enum OperandU16 {
     RegisterPair(u8),
     ImmediateU16,
@@ -50,7 +53,7 @@ pub struct CPU {
 
     stack_pointer: u16,
     program_counter: u16,
-    memory: [u8; 0xFFFF + 1],
+    memory: Rc<RefCell<MemManager>>,
     instructions: ArrayVec<Instruction, { 0xFF + 1 }>,
     halted: bool,
     ime: bool,
@@ -59,7 +62,7 @@ pub struct CPU {
 }
 
 impl CPU {
-    pub fn new() -> Self {
+    pub fn new(mem: Rc<RefCell<MemManager>>) -> Self {
         let mut cpu = CPU {
             register_a: 0x11,
             register_f: 0x80,
@@ -71,7 +74,38 @@ impl CPU {
             register_l: 0x0D,
             stack_pointer: 0xFFFE,
             program_counter: 0x0100,
-            memory: [0; 0xFFFF + 1],
+            memory: mem,
+            instructions: ArrayVec::new(),
+            halted: false,
+            ime: false,
+            ei_queue: VecDeque::new(),
+            changed_cycles: None,
+        };
+
+        let init_inst = Rc::new(|cpu: &mut CPU| {});
+        for _ in 0..cpu.instructions.capacity() {
+            cpu.instructions
+                .push(Instruction::new(1, init_inst.clone()));
+        }
+
+        map_instructions(&mut cpu);
+
+        cpu
+    }
+
+    fn new_standalone() -> Self {
+        let mut cpu = CPU {
+            register_a: 0x11,
+            register_f: 0x80,
+            register_b: 0x00,
+            register_c: 0x00,
+            register_d: 0xFF,
+            register_e: 0x56,
+            register_h: 0x00,
+            register_l: 0x0D,
+            stack_pointer: 0xFFFE,
+            program_counter: 0x0100,
+            memory: Rc::new(RefCell::new(MemManager::new())),
             instructions: ArrayVec::new(),
             halted: false,
             ime: false,
@@ -230,26 +264,61 @@ impl CPU {
         }
     }
 
-    fn get_operand(&mut self, op: Operand) -> Option<&mut u8> {
+    fn read_operand(&mut self, op: Operand) -> Option<u8> {
         match op {
-            Register(r) => self.get_register(r),
-            Indirect(a) => Some(self.get_memory_ref(a)),
+            Register(r) => {
+                if let Some(reg) = self.get_register(r) {
+                    Some(*reg)
+                } else {
+                    None
+                }
+            }
+            Indirect(a) => Some(self.read(a)),
             Immediate => {
                 self.program_counter += 1;
-                let arg = self.get_memory_ref(self.program_counter - 1);
-                Some(arg)
+                Some(self.read(self.program_counter - 1))
             }
         }
     }
 
-    fn get_operand_pair(&mut self, op: OperandU16) -> Option<(&mut u8, &mut u8)> {
+    fn write_operand(&mut self, op: Operand, data: u8) {
         match op {
-            RegisterPair(r) => self.get_register_pair(r),
+            Register(r) => {
+                if let Some(reg) = self.get_register(r) {
+                    *reg = data;
+                }
+            }
+            Indirect(a) => self.write(a, data),
+            Immediate => (),
+        }
+    }
+
+    fn read_operand_u16(&mut self, op: OperandU16) -> Option<u16> {
+        match op {
+            RegisterPair(r) => {
+                if let Some((high, low)) = self.get_register_pair(r) {
+                    Some(CPU::combine_bytes(*high, *low))
+                } else {
+                    None
+                }
+            }
             ImmediateU16 => {
                 let pc_value = self.program_counter;
                 self.program_counter += 2;
-                Some(self.get_memory_ref_pair(pc_value, pc_value + 1))
+                Some(self.read_u16(pc_value))
             }
+        }
+    }
+
+    fn write_operand_u16(&mut self, op: OperandU16, data: u16) {
+        match op {
+            RegisterPair(r) => {
+                if let Some((high, low)) = self.get_register_pair(r) {
+                    *high = (data >> 8) as u8;
+                    *low = data as u8;
+                }
+            }
+            ImmediateU16 => (),
         }
     }
 
@@ -356,10 +425,9 @@ impl CPU {
     // Instruction helpers
     fn push(&mut self, op: OperandU16) {
         let sp_value = self.stack_pointer;
-        let source_option = self.get_operand_pair(op);
-        if let Some((high, low)) = source_option {
-            let (high_value, low_value) = (*high, *low);
-            self.write_u16(sp_value - 2, CPU::combine_bytes(high_value, low_value));
+        let source_option = self.read_operand_u16(op);
+        if let Some(source) = source_option {
+            self.write_u16(sp_value - 2, source);
             self.stack_pointer -= 2;
         }
     }
@@ -367,118 +435,114 @@ impl CPU {
     fn pop(&mut self, op: OperandU16) {
         let sp_value = self.stack_pointer;
         let source = self.read_u16(sp_value);
-        let dest_option = self.get_operand_pair(op);
-        if let Some((high, low)) = dest_option {
-            *high = (source >> 8) as u8;
-            *low = source as u8;
-            self.stack_pointer += 2;
-        }
+        self.write_operand_u16(op, source);
+        self.stack_pointer += 2;
     }
 
     fn rlc(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let bit_seven = (*source & 0b10000000) >> 7;
-            *source = *source << 1 | bit_seven;
-            let is_zero = if *source == 0 { 1 } else { 0 };
+            let bit_seven = (source & 0b10000000) >> 7;
+            self.write_operand(op, source << 1 | bit_seven);
+            let is_zero = if source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
 
     fn rl(&mut self, op: Operand, carry_bit: u8) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let bit_seven = (*source & 0b10000000) >> 7;
-            *source = *source << 1 | carry_bit;
-            let is_zero = if *source == 0 { 1 } else { 0 };
+            let bit_seven = (source & 0b10000000) >> 7;
+            self.write_operand(op, source << 1 | carry_bit);
+            let is_zero = if source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
 
     fn rrc(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let bit_zero = *source & 0b00000001;
-            *source = *source >> 1 | bit_zero << 7;
-            let is_zero = if *source == 0 { 1 } else { 0 };
+            let bit_zero = source & 0b00000001;
+            self.write_operand(op, source >> 1 | bit_zero << 7);
+            let is_zero = if source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
 
     fn rr(&mut self, op: Operand, carry_bit: u8) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let bit_zero = *source & 0b00000001;
-            *source = *source >> 1 | carry_bit << 7;
-            let is_zero = if *source == 0 { 1 } else { 0 };
+            let bit_zero = source & 0b00000001;
+            self.write_operand(op, source >> 1 | carry_bit << 7);
+            let is_zero = if source == 0 { 1 } else { 0 };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
 
     fn sla(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let carry_bit = (*source & 0b10000000) >> 7;
-            *source = *source << 1;
-            let zero_bit = if *source == 0 { 1 } else { 0 };
+            let carry_bit = (source & 0b10000000) >> 7;
+            self.write_operand(op, source << 1);
+            let zero_bit = if source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
     fn sra(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let bit_seven = *source & 0b10000000;
-            let carry_bit = *source & 0b00000001;
-            *source = (*source >> 1) | bit_seven;
-            let zero_bit = if *source == 0 { 1 } else { 0 };
+            let bit_seven = source & 0b10000000;
+            let carry_bit = source & 0b00000001;
+            self.write_operand(op, (source >> 1) | bit_seven);
+            let zero_bit = if source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
     fn srl(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let carry_bit = *source & 0b00000001;
-            *source = *source >> 1;
-            let zero_bit = if *source == 0 { 1 } else { 0 };
+            let carry_bit = source & 0b00000001;
+            self.write_operand(op, source >> 1);
+            let zero_bit = if source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
         }
     }
 
     fn swap(&mut self, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
-            let high_nibble = *source & 0b11110000;
-            let low_nibble = *source & 0b00001111;
-            *source = low_nibble << 4 | high_nibble >> 4;
-            let zero_bit = if *source == 0 { 1 } else { 0 };
+            let high_nibble = source & 0b11110000;
+            let low_nibble = source & 0b00001111;
+            self.write_operand(op, low_nibble << 4 | high_nibble >> 4);
+            let zero_bit = if source == 0 { 1 } else { 0 };
             self.register_f = 0b00000000 | zero_bit << 7;
         }
     }
 
     fn bit(&mut self, bit_num: u8, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
             let mask = 1 << bit_num;
-            let test_bit = (*source & mask) >> bit_num;
+            let test_bit = (source & mask) >> bit_num;
             self.register_f = self.register_f & 0b00011111 | 0b00100000 | test_bit << 7;
         }
     }
 
     fn res(&mut self, bit_num: u8, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
             let mask = !(1 << bit_num);
-            *source = *source & mask;
+            self.write_operand(op, source & mask);
         }
     }
 
     fn set(&mut self, bit_num: u8, op: Operand) {
-        let source_option = self.get_operand(op);
+        let source_option = self.read_operand(op);
         if let Some(source) = source_option {
             let set_bit = 1 << bit_num;
-            *source = *source | set_bit;
+            self.write_operand(op, source | set_bit);
         }
     }
 
@@ -489,7 +553,7 @@ impl CPU {
     }
 
     fn jr(&mut self) {
-        let displacement = *self.get_operand(Immediate).unwrap() as u8;
+        let displacement = self.read_operand(Immediate).unwrap() as u8;
         let mut pc = Wrapping(self.program_counter);
         if (0x80 & displacement) >> 7 == 1 {
             pc -= (!displacement + 1) as u16;
@@ -502,39 +566,19 @@ impl CPU {
 
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
-        let data = self.memory[address as usize];
-        //println!("Read value {:x} from {:x}", data, address);
-        data
+        self.memory.borrow().read(address)
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        //println!("Wrote value {:x} to {:x}", data, address);
-        self.memory[address as usize] = data;
+        self.memory.borrow_mut().write(address, data);
     }
 
     fn read_u16(&self, address: u16) -> u16 {
-        // The low byte is first because the GB CPU uses Little-Endian addressing
-        let low = self.read(address) as u16;
-        let high = self.read(address + 1) as u16;
-        (high << 8) | low
+        self.memory.borrow().read_u16(address)
     }
 
     fn write_u16(&mut self, address: u16, data: u16) {
-        let low = data as u8;
-        let high = (data >> 8) as u8;
-        self.write(address, low);
-        self.write(address + 1, high);
-    }
-
-    fn get_memory_ref(&mut self, address: u16) -> &mut u8 {
-        &mut self.memory[address as usize]
-    }
-
-    fn get_memory_ref_pair(&mut self, address1: u16, address2: u16) -> (&mut u8, &mut u8) {
-        let (lower, upper) = self.memory.split_at_mut(address2 as usize);
-        let upper_byte = &mut upper[0];
-        let lower_byte = &mut lower[address1 as usize];
-        (upper_byte, lower_byte)
+        self.memory.borrow_mut().write_u16(address, data);
     }
 }
 
@@ -1655,8 +1699,8 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0xC3] = Instruction::new(
         4,
         Rc::new(move |cpu: &mut CPU| {
-            let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
-            cpu.program_counter = CPU::combine_bytes(*high, *low);
+            let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
+            cpu.program_counter = dest;
         }),
     );
 
@@ -1674,8 +1718,8 @@ fn map_instructions(cpu: &mut CPU) {
             4,
             Rc::new(move |cpu: &mut CPU| {
                 if cpu.test_condition_code(i - 0xC2) {
-                    let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
-                    cpu.program_counter = CPU::combine_bytes(*high, *low);
+                    let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
+                    cpu.program_counter = dest;
                 }
             }),
         );
@@ -1706,9 +1750,8 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0xCD] = Instruction::new(
         6,
         Rc::new(move |cpu: &mut CPU| {
-            let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
-            let (high_value, low_value) = (*high, *low);
-            cpu.call(CPU::combine_bytes(high_value, low_value));
+            let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
+            cpu.call(dest);
         }),
     );
 
@@ -1718,9 +1761,8 @@ fn map_instructions(cpu: &mut CPU) {
             6,
             Rc::new(move |cpu: &mut CPU| {
                 if cpu.test_condition_code(i - 0xC4) {
-                    let (high, low) = cpu.get_operand_pair(ImmediateU16).unwrap();
-                    let (high_value, low_value) = (*high, *low);
-                    cpu.call(CPU::combine_bytes(high_value, low_value));
+                    let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
+                    cpu.call(dest);
                     cpu.changed_cycles = Some(3);
                 }
             }),
@@ -1777,63 +1819,63 @@ mod tests {
 
     #[test]
     fn ld_a_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0b01111000);
         assert_eq!(cpu.register_a, 0x00);
     }
 
     #[test]
     fn ld_a_d() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0b01111010);
         assert_eq!(cpu.register_a, 0xFF);
     }
 
     #[test]
     fn ld_b_l() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x45);
         assert_eq!(cpu.register_b, 0x0D);
     }
 
     #[test]
     fn ld_c_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x4f);
         assert_eq!(cpu.register_c, 0x11);
     }
 
     #[test]
     fn ld_d_h() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x54);
         assert_eq!(cpu.register_d, 0x00);
     }
 
     #[test]
     fn ld_e_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x59);
         assert_eq!(cpu.register_e, 0x00);
     }
 
     #[test]
     fn ld_h_e() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x63);
         assert_eq!(cpu.register_h, 0x56);
     }
 
     #[test]
     fn ld_l_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x6F);
         assert_eq!(cpu.register_l, 0x11);
     }
 
     #[test]
     fn two_loads() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // LD b, a
         // LD d, a
         cpu.run_test(vec![0x47, 0x57]);
@@ -1842,7 +1884,7 @@ mod tests {
 
     #[test]
     fn load_immediate_args_not_used_as_opcodes() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // LD b, 0x1A (1A is the opcode for LD a, (DE))
         // LD d, 0xF1
         cpu.run_test(vec![0x06, 0x1A, 0x16, 0xF1]);
@@ -1853,7 +1895,7 @@ mod tests {
 
     #[test]
     fn loaded_register_not_changed() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // LD e, c
         cpu.run_test(vec![0x59]);
         assert_eq!(cpu.register_c, 0x00);
@@ -1861,42 +1903,42 @@ mod tests {
 
     #[test]
     fn ld_a_immediate_value() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x3E, 0x08]);
         assert_eq!(cpu.register_a, 0x08);
     }
 
     #[test]
     fn ld_b_immediate_value() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x06, 0xFF]);
         assert_eq!(cpu.register_b, 0xFF);
     }
 
     #[test]
     fn ld_c_immediate_value() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x0E, 0x12]);
         assert_eq!(cpu.register_c, 0x12);
     }
 
     #[test]
     fn ld_d_immediate_value() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x16, 0x00]);
         assert_eq!(cpu.register_d, 0x00);
     }
 
     #[test]
     fn ld_a_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0b01111110]);
         assert_eq!(cpu.register_a, 0x00);
     }
 
     #[test]
     fn ld_hl_e() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0b01110011]);
         assert_eq!(
             cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
@@ -1906,7 +1948,7 @@ mod tests {
 
     #[test]
     fn ld_hl_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0b00110110, 0x87]);
         assert_eq!(
             cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)),
@@ -1916,7 +1958,7 @@ mod tests {
 
     #[test]
     fn ld_a_bc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x0A);
         let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
         assert_eq!(cpu.register_a, val);
@@ -1924,7 +1966,7 @@ mod tests {
 
     #[test]
     fn ld_a_de() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x1A);
         let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
         assert_eq!(cpu.register_a, val);
@@ -1932,7 +1974,7 @@ mod tests {
 
     #[test]
     fn ld_bc_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x02);
         let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
         assert_eq!(val, cpu.register_a);
@@ -1940,7 +1982,7 @@ mod tests {
 
     #[test]
     fn ld_de_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.execute(0x12);
         let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
         assert_eq!(val, cpu.register_a);
@@ -1948,7 +1990,7 @@ mod tests {
 
     #[test]
     fn ld_a_nn() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xFA, 0x01, 0x10]);
         let val = cpu.read(CPU::combine_bytes(0x10, 0x01));
         assert_eq!(cpu.register_a, val);
@@ -1956,7 +1998,7 @@ mod tests {
 
     #[test]
     fn ld_nn_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xEA, 0x01, 0x10]);
         let val = cpu.read(CPU::combine_bytes(0x10, 0x01));
         assert_eq!(cpu.register_a, val);
@@ -1964,7 +2006,7 @@ mod tests {
 
     #[test]
     fn multiple_ld_instructions_with_varying_args() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld a, $3456
         // ld c, a
         // ld b, $78
@@ -1976,7 +2018,7 @@ mod tests {
 
     #[test]
     fn ldh_a_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF2]);
         let val = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
         assert_eq!(cpu.register_a, val);
@@ -1984,7 +2026,7 @@ mod tests {
 
     #[test]
     fn ldh_c_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE2]);
         let val = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
         assert_eq!(val, 0x11);
@@ -1992,7 +2034,7 @@ mod tests {
 
     #[test]
     fn ldh_a_n() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF0, 0x06]);
         let val = cpu.read(CPU::combine_bytes(0xFF, 0x06));
         assert_eq!(cpu.register_a, val);
@@ -2000,7 +2042,7 @@ mod tests {
 
     #[test]
     fn ldh_n_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE0, 0x0A]);
         let val = cpu.read(CPU::combine_bytes(0xFF, 0x0A));
         assert_eq!(val, 0x11);
@@ -2008,7 +2050,7 @@ mod tests {
 
     #[test]
     fn ldi_a_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.run_test(vec![0x2A]);
         let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
@@ -2018,7 +2060,7 @@ mod tests {
 
     #[test]
     fn ldi_hl_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.run_test(vec![0x22]);
         let val = cpu.read(initial);
@@ -2029,7 +2071,7 @@ mod tests {
 
     #[test]
     fn ldd_a_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.run_test(vec![0x3A]);
         let changed = CPU::combine_bytes(cpu.register_h, cpu.register_l);
@@ -2039,7 +2081,7 @@ mod tests {
 
     #[test]
     fn ldd_hl_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.run_test(vec![0x32]);
         let val = cpu.read(initial);
@@ -2050,7 +2092,7 @@ mod tests {
 
     #[test]
     fn ld_bc_immediate_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x01, 0x08, 0x05]);
         assert_eq!(cpu.register_b, 0x05);
         assert_eq!(cpu.register_c, 0x08);
@@ -2058,7 +2100,7 @@ mod tests {
 
     #[test]
     fn ld_de_immediate_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x11, 0x08, 0x05]);
         assert_eq!(cpu.register_d, 0x05);
         assert_eq!(cpu.register_e, 0x08);
@@ -2066,7 +2108,7 @@ mod tests {
 
     #[test]
     fn ld_hl_immediate_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x21, 0x08, 0x05]);
         assert_eq!(cpu.register_h, 0x05);
         assert_eq!(cpu.register_l, 0x08);
@@ -2074,21 +2116,21 @@ mod tests {
 
     #[test]
     fn ld_sp_immediate_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x31, 0x08, 0x05]);
         assert_eq!(cpu.stack_pointer, 0x0508);
     }
 
     #[test]
     fn ld_nn_sp_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x08, 0x0F, 0x02]);
         assert_eq!(cpu.read_u16(0x020f), 0xFFFE);
     }
 
     #[test]
     fn ld_sp_hl_u16() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF9]);
         assert_eq!(
             cpu.stack_pointer,
@@ -2098,7 +2140,7 @@ mod tests {
 
     #[test]
     fn push_bc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = cpu.stack_pointer;
         cpu.run_test(vec![0xC5]);
         let changed = cpu.stack_pointer;
@@ -2109,13 +2151,13 @@ mod tests {
     #[test]
     #[should_panic]
     fn pop_without_pushing_first() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF1]);
     }
 
     #[test]
     fn push_bc_pop_af() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = cpu.stack_pointer;
         cpu.run_test(vec![0xC5, 0xF1]);
         let changed = cpu.stack_pointer;
@@ -2128,7 +2170,7 @@ mod tests {
 
     #[test]
     fn multiple_pushes_multiple_pops() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial = cpu.stack_pointer;
         // push bc
         // push de
@@ -2145,28 +2187,28 @@ mod tests {
 
     #[test]
     fn add_basic_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x80]);
         assert_eq!(cpu.register_a, 0x11);
     }
 
     #[test]
     fn add_basic_l() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x85]);
         assert_eq!(cpu.register_a, 0x1E);
     }
 
     #[test]
     fn add_basic_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0x12]);
         assert_eq!(cpu.register_a, 0x23);
     }
 
     #[test]
     fn add_basic_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl), $02
         // add a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0x86]);
@@ -2175,14 +2217,14 @@ mod tests {
 
     #[test]
     fn add_a_has_correct_value_after_overflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0xFF]);
         assert_eq!(cpu.register_a, 0x10);
     }
 
     #[test]
     fn add_zero_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld a, 0
         // add a, 0
         cpu.run_test(vec![0x3E, 0x00, 0xC6, 0x00]);
@@ -2192,7 +2234,7 @@ mod tests {
 
     #[test]
     fn add_zero_flag_is_one_with_overflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0xEE]);
         let zero_bit = cpu.register_f & 0b00010000;
         assert_eq!(zero_bit, 0);
@@ -2200,7 +2242,7 @@ mod tests {
 
     #[test]
     fn add_zero_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0x11]);
         let zero_bit = cpu.register_f & 0b10000000;
         assert_eq!(zero_bit, 0);
@@ -2208,7 +2250,7 @@ mod tests {
 
     #[test]
     fn add_carry_flag_is_zero_no_overflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0x01]);
         let overflow_bit = cpu.register_f & 0b00010000;
         assert_eq!(overflow_bit, 0);
@@ -2216,7 +2258,7 @@ mod tests {
 
     #[test]
     fn add_carry_flag_is_one_after_overflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0xFF]);
         let overflow_bit = cpu.register_f & 0b00010000;
         assert_eq!(overflow_bit, 16);
@@ -2224,7 +2266,7 @@ mod tests {
 
     #[test]
     fn add_half_carry_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0x01]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 0);
@@ -2232,7 +2274,7 @@ mod tests {
 
     #[test]
     fn add_half_carry_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld a, $08
         // add a, $08
         cpu.run_test(vec![0x3E, 0x08, 0xC6, 0x08]);
@@ -2242,7 +2284,7 @@ mod tests {
 
     #[test]
     fn add_half_carry_flag_is_one_carried_from_bit_1() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld a, $0A
         // add a, $07
         cpu.run_test(vec![0x3E, 0x0A, 0xC6, 0x07]);
@@ -2252,7 +2294,7 @@ mod tests {
 
     #[test]
     fn add_subtraction_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC6, 0x01]);
         let subtraction_bit = cpu.register_f & 0b01000000;
         assert_eq!(subtraction_bit, 0);
@@ -2260,7 +2302,7 @@ mod tests {
 
     #[test]
     fn add_multiple_times_and_flags_reflect_most_recent() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // Add a, $FF (overflow flag will be 1 at this point: same as prior test)
         // Add a, $01 (overflow flag should be 0 now)
         cpu.run_test(vec![0xC6, 0xFF, 0xC6, 0x01]);
@@ -2270,14 +2312,14 @@ mod tests {
 
     #[test]
     fn adc_e_when_carry_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x8B]);
         assert_eq!(cpu.register_a, 0x67);
     }
 
     #[test]
     fn adc_e_when_carry_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0x8B]);
         assert_eq!(cpu.register_a, 0x68);
@@ -2285,7 +2327,7 @@ mod tests {
 
     #[test]
     fn adc_n() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0xCE, 0x02]);
         assert_eq!(cpu.register_a, 0x14);
@@ -2293,7 +2335,7 @@ mod tests {
 
     #[test]
     fn adc_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl), $02
         // add a, (hl)
         cpu.register_f = cpu.register_f | 0b00010000;
@@ -2303,14 +2345,14 @@ mod tests {
 
     #[test]
     fn sub_c_basic() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x91]);
         assert_eq!(cpu.register_a, 0x11);
     }
 
     #[test]
     fn sub_b_basic() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0x10;
         cpu.run_test(vec![0x90]);
         assert_eq!(cpu.register_a, 0x01);
@@ -2318,14 +2360,14 @@ mod tests {
 
     #[test]
     fn sub_basic_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x08]);
         assert_eq!(cpu.register_a, 0x09);
     }
 
     #[test]
     fn sub_basic_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl), $02
         // sub a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0x96]);
@@ -2334,7 +2376,7 @@ mod tests {
 
     #[test]
     fn sub_zero_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x11]);
         let zero_bit = cpu.register_f & 0b10000000;
         assert_eq!(zero_bit, 128);
@@ -2342,7 +2384,7 @@ mod tests {
 
     #[test]
     fn sub_zero_flag_is_one_with_underflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0xEE]);
         let zero_bit = cpu.register_f & 0b00010000;
         assert_eq!(zero_bit, 16);
@@ -2350,7 +2392,7 @@ mod tests {
 
     #[test]
     fn sub_zero_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x01]);
         let zero_bit = cpu.register_f & 0b10000000;
         assert_eq!(zero_bit, 0);
@@ -2358,14 +2400,14 @@ mod tests {
 
     #[test]
     fn sub_a_has_correct_value_after_underflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x12]);
         assert_eq!(cpu.register_a, 0xFF);
     }
 
     #[test]
     fn sub_carry_flag_is_one_after_underflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x12]);
         let carry_bit = cpu.register_f & 0b00010000;
         assert_eq!(carry_bit, 16);
@@ -2373,7 +2415,7 @@ mod tests {
 
     #[test]
     fn sub_carry_flag_is_zero_without_underflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x10]);
         let carry_bit = cpu.register_f & 0b00010000;
         assert_eq!(carry_bit, 0);
@@ -2381,7 +2423,7 @@ mod tests {
 
     #[test]
     fn sub_half_carry_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x01]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 0);
@@ -2389,7 +2431,7 @@ mod tests {
 
     #[test]
     fn sub_half_carry_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x08]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 32);
@@ -2397,7 +2439,7 @@ mod tests {
 
     #[test]
     fn sub_half_carry_flag_is_one_borrow_across_multiple_bits() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x02]);
         let half_carry_bit = cpu.register_f & 0b00100000;
         assert_eq!(half_carry_bit, 32);
@@ -2405,7 +2447,7 @@ mod tests {
 
     #[test]
     fn sub_subtraction_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xD6, 0x01]);
         let subtraction_bit = cpu.register_f & 0b01000000;
         assert_eq!(subtraction_bit, 64);
@@ -2413,14 +2455,14 @@ mod tests {
 
     #[test]
     fn sbc_b_when_carry_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x98]);
         assert_eq!(cpu.register_a, 0x11);
     }
 
     #[test]
     fn sbc_b_when_carry_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0x98]);
         assert_eq!(cpu.register_a, 0x10);
@@ -2428,7 +2470,7 @@ mod tests {
 
     #[test]
     fn sbc_n() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = cpu.register_f | 0b00010000;
         cpu.run_test(vec![0xDE, 0x10]);
         assert_eq!(cpu.register_a, 0x00);
@@ -2436,7 +2478,7 @@ mod tests {
 
     #[test]
     fn sbc_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl), $02
         // sbc a, (hl)
         cpu.register_f = cpu.register_f | 0b00010000;
@@ -2446,105 +2488,105 @@ mod tests {
 
     #[test]
     fn and_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xA0]);
         assert_eq!(cpu.register_a, 0)
     }
 
     #[test]
     fn and_b_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xA0]);
         assert_eq!(cpu.register_f, 0b10100000);
     }
 
     #[test]
     fn and_a_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xA7]);
         assert_eq!(cpu.register_f, 0b00100000);
     }
 
     #[test]
     fn and_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE6, 0b11110000]);
         assert_eq!(cpu.register_a, 0b00010000);
     }
 
     #[test]
     fn and_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE6]);
         assert_eq!(cpu.register_a, 0);
     }
 
     #[test]
     fn xor_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xA8]);
         assert_eq!(cpu.register_a, 0b00010001)
     }
 
     #[test]
     fn xor_b_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xA8]);
         assert_eq!(cpu.register_f, 0b00000000);
     }
 
     #[test]
     fn xor_a_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xAF]);
         assert_eq!(cpu.register_f, 0b10000000);
     }
 
     #[test]
     fn xor_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xEE, 0b11111111]);
         assert_eq!(cpu.register_a, 0b11101110);
     }
 
     #[test]
     fn xor_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xAE]);
         assert_eq!(cpu.register_a, 0b00010001);
     }
 
     #[test]
     fn or_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xB0]);
         assert_eq!(cpu.register_a, 0b00010001)
     }
 
     #[test]
     fn or_b_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xB0]);
         assert_eq!(cpu.register_f, 0b00000000);
     }
 
     #[test]
     fn or_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF6, 0b11101110]);
         assert_eq!(cpu.register_a, 0b11111111);
     }
 
     #[test]
     fn or_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xB6]);
         assert_eq!(cpu.register_a, 0b00010001);
     }
 
     #[test]
     fn cp_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0x10;
         cpu.run_test(vec![0xB8]);
         assert_eq!(cpu.register_f, 0b01000000);
@@ -2552,14 +2594,14 @@ mod tests {
 
     #[test]
     fn cp_immediate() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xFE, 0x08]);
         assert_eq!(cpu.register_f, 0b01100000);
     }
 
     #[test]
     fn cp_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl), $02
         // cp a, (hl)
         cpu.run_test(vec![0x36, 0x02, 0xBE]);
@@ -2568,14 +2610,14 @@ mod tests {
 
     #[test]
     fn inc_b_basic() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x04]);
         assert_eq!(cpu.register_b, 0x01);
     }
 
     #[test]
     fn inc_b_overflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld b 0xFF
         // inc b
         cpu.run_test(vec![0x06, 0xFF, 0x04]);
@@ -2584,7 +2626,7 @@ mod tests {
 
     #[test]
     fn inc_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl) 0x02
         // inc (hl)
         cpu.run_test(vec![0x36, 0x02, 0x34]);
@@ -2596,7 +2638,7 @@ mod tests {
 
     #[test]
     fn inc_doesnt_change_carry_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld b 0xFF
         // inc b
         let initial_carry_bit = 0b00010000 & cpu.register_f;
@@ -2607,7 +2649,7 @@ mod tests {
 
     #[test]
     fn dec_b_basic() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld b 0xFF
         // dec b
         cpu.run_test(vec![0x06, 0xFF, 0x05]);
@@ -2616,14 +2658,14 @@ mod tests {
 
     #[test]
     fn dec_b_underflow() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x05]);
         assert_eq!(cpu.register_b, 0xFF);
     }
 
     #[test]
     fn dec_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // ld (hl) 0x02
         // dec (hl)
         cpu.run_test(vec![0x36, 0x02, 0x35]);
@@ -2635,7 +2677,7 @@ mod tests {
 
     #[test]
     fn dec_doesnt_change_carry_flag() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_carry_bit = 0b00010000 & cpu.register_f;
         cpu.run_test(vec![0x05]);
         let carry_bit = 0b00010000 & cpu.register_f;
@@ -2644,7 +2686,7 @@ mod tests {
 
     #[test]
     fn daa_both_digits_within_limit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0x99;
         cpu.run_test(vec![0x27]);
         assert_eq!(cpu.register_a, 0x99);
@@ -2653,7 +2695,7 @@ mod tests {
 
     #[test]
     fn daa_lsb_outside_limit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0x0A;
         cpu.run_test(vec![0x27]);
         assert_eq!(cpu.register_a, 0x10);
@@ -2662,7 +2704,7 @@ mod tests {
 
     #[test]
     fn daa_msb_outside_limit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0xA0;
         cpu.run_test(vec![0x27]);
         assert_eq!(cpu.register_a, 0x00);
@@ -2671,7 +2713,7 @@ mod tests {
 
     #[test]
     fn daa_overflow_to_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0x9A;
         cpu.run_test(vec![0x27]);
         assert_eq!(cpu.register_a, 0x00);
@@ -2680,56 +2722,56 @@ mod tests {
 
     #[test]
     fn cpl_basic() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x2F]);
         assert_eq!(cpu.register_a, 0b11101110);
     }
 
     #[test]
     fn cpl_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x2F]);
         assert_eq!(cpu.register_f, 0b11100000);
     }
 
     #[test]
     fn add_hl_bc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x09]);
         assert_eq!((cpu.register_h, cpu.register_l), (0x00, 0x0D));
     }
 
     #[test]
     fn add_hl_sp() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x39]);
         assert_eq!((cpu.register_h, cpu.register_l), (0x00, 0x0B));
     }
 
     #[test]
     fn add_hl_sp_flags_are_correct() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x39]);
         assert_eq!(cpu.register_f, 0b10110000);
     }
 
     #[test]
     fn inc_bc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x03]);
         assert_eq!((cpu.register_b, cpu.register_c), (0x00, 0x01));
     }
 
     #[test]
     fn inc_sp() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x33]);
         assert_eq!(cpu.stack_pointer, 0xFFFF);
     }
 
     #[test]
     fn inc_doesnt_change_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_flags = cpu.register_f;
         cpu.run_test(vec![0x33]);
         assert_eq!(cpu.register_f, initial_flags);
@@ -2737,21 +2779,21 @@ mod tests {
 
     #[test]
     fn dec_bc() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x0B]);
         assert_eq!((cpu.register_b, cpu.register_c), (0xFF, 0xFF));
     }
 
     #[test]
     fn dec_sp() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x3B]);
         assert_eq!(cpu.stack_pointer, 0xFFFD);
     }
 
     #[test]
     fn dec_doesnt_change_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_flags = cpu.register_f;
         cpu.run_test(vec![0x0B]);
         assert_eq!(cpu.register_f, initial_flags);
@@ -2759,14 +2801,14 @@ mod tests {
 
     #[test]
     fn add_sp_dd() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE8, 0xF0]);
         assert_eq!(cpu.stack_pointer, 0x00EE);
     }
 
     #[test]
     fn ld_hl_sp_dd() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF8, 0xF0]);
         assert_eq!(CPU::combine_bytes(cpu.register_h, cpu.register_l), 0x00EE);
         assert_eq!(cpu.stack_pointer, 0xFFFE);
@@ -2774,14 +2816,14 @@ mod tests {
 
     #[test]
     fn rlca_bit_zero_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x07]);
         assert_eq!(cpu.register_a, 0b00100010);
     }
 
     #[test]
     fn rlca_bit_zero_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000000;
         cpu.run_test(vec![0x07]);
         assert_eq!(cpu.register_a, 0b00000001);
@@ -2789,14 +2831,14 @@ mod tests {
 
     #[test]
     fn rlca_carry_flag_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x07]);
         assert_eq!(cpu.register_f, 0b00000000);
     }
 
     #[test]
     fn rlca_carry_flag_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000000;
         cpu.run_test(vec![0x07]);
         assert_eq!(cpu.register_f, 0b00010000);
@@ -2804,7 +2846,7 @@ mod tests {
 
     #[test]
     fn rla_carry_bit_becomes_bit_seven() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b10010000;
         cpu.register_a = 0b01111111;
         cpu.run_test(vec![0x17]);
@@ -2813,7 +2855,7 @@ mod tests {
 
     #[test]
     fn rla_bit_zero_becomes_carry_bit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00010000;
         cpu.register_a = 0b00000000;
         cpu.run_test(vec![0x17]);
@@ -2822,7 +2864,7 @@ mod tests {
 
     #[test]
     fn rrca() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000001;
         cpu.run_test(vec![0x0F]);
         assert_eq!(cpu.register_a, 0b11000000);
@@ -2830,7 +2872,7 @@ mod tests {
 
     #[test]
     fn rrca_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000001;
         cpu.run_test(vec![0x0F]);
         assert_eq!(cpu.register_f, 0b00010000);
@@ -2838,7 +2880,7 @@ mod tests {
 
     #[test]
     fn rra() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000000;
         cpu.register_f = 0b00010000;
         cpu.run_test(vec![0x1F]);
@@ -2847,7 +2889,7 @@ mod tests {
 
     #[test]
     fn rra_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_a = 0b10000000;
         cpu.register_f = 0b00010000;
         cpu.run_test(vec![0x1F]);
@@ -2857,7 +2899,7 @@ mod tests {
     #[test]
     fn rlc_hl() {
         // Mainly just to test the 0xCB instructions are mapped correctly
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b10000000);
         cpu.run_test(vec![0xCB, 0x06]);
@@ -2866,7 +2908,7 @@ mod tests {
 
     #[test]
     fn sla_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b01010011;
         cpu.run_test(vec![0xCB, 0x20]);
         assert_eq!(cpu.register_b, 0b10100110);
@@ -2874,7 +2916,7 @@ mod tests {
 
     #[test]
     fn sla_b_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b11010011;
         cpu.run_test(vec![0xCB, 0x20]);
         assert_eq!(cpu.register_f, 0b00010000);
@@ -2882,7 +2924,7 @@ mod tests {
 
     #[test]
     fn sla_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b01011111);
         cpu.run_test(vec![0xCB, 0x26]);
@@ -2891,7 +2933,7 @@ mod tests {
 
     #[test]
     fn sra_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b11010000;
         cpu.run_test(vec![0xCB, 0x28]);
         assert_eq!(cpu.register_b, 0b11101000);
@@ -2899,7 +2941,7 @@ mod tests {
 
     #[test]
     fn sra_b_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b01010011;
         cpu.run_test(vec![0xCB, 0x28]);
         assert_eq!(cpu.register_f, 0b00010000);
@@ -2907,7 +2949,7 @@ mod tests {
 
     #[test]
     fn sra_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b01000001);
         cpu.run_test(vec![0xCB, 0x2E]);
@@ -2916,7 +2958,7 @@ mod tests {
 
     #[test]
     fn srl_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b11010000;
         cpu.run_test(vec![0xCB, 0x38]);
         assert_eq!(cpu.register_b, 0b01101000);
@@ -2924,7 +2966,7 @@ mod tests {
 
     #[test]
     fn srl_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b01000001);
         cpu.run_test(vec![0xCB, 0x3E]);
@@ -2933,7 +2975,7 @@ mod tests {
 
     #[test]
     fn swap_b() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b11010000;
         cpu.run_test(vec![0xCB, 0x30]);
         assert_eq!(cpu.register_b, 0b00001101);
@@ -2941,7 +2983,7 @@ mod tests {
 
     #[test]
     fn swap_b_flags() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b11010000;
         cpu.run_test(vec![0xCB, 0x30]);
         assert_eq!(cpu.register_f, 0b00000000);
@@ -2949,7 +2991,7 @@ mod tests {
 
     #[test]
     fn swap_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b01000001);
         cpu.run_test(vec![0xCB, 0x36]);
@@ -2958,14 +3000,14 @@ mod tests {
 
     #[test]
     fn bit_0_b_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0x40]);
         assert_eq!(cpu.register_f, 0b00100000);
     }
 
     #[test]
     fn bit_7_b_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b10000000;
         cpu.run_test(vec![0xCB, 0x78]);
         assert_eq!(cpu.register_f, 0b10100000);
@@ -2973,7 +3015,7 @@ mod tests {
 
     #[test]
     fn bit_5_hl_is_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b00100000);
         cpu.run_test(vec![0xCB, 0x6E]);
@@ -2982,7 +3024,7 @@ mod tests {
 
     #[test]
     fn bit_4_hl_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b00100000);
         cpu.run_test(vec![0xCB, 0x66]);
@@ -2991,63 +3033,63 @@ mod tests {
 
     #[test]
     fn res_0_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0x87]);
         assert_eq!(cpu.register_a, 0b00010000);
     }
 
     #[test]
     fn res_4_a() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xA7]);
         assert_eq!(cpu.register_a, 0b00000001);
     }
 
     #[test]
     fn res_7_d() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xBA]);
         assert_eq!(cpu.register_d, 0b01111111);
     }
 
     #[test]
     fn res_0_b_doesnt_change_bit_if_already_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0x80]);
         assert_eq!(cpu.register_b, 0b00000000);
     }
 
     #[test]
     fn set_0_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xC1]);
         assert_eq!(cpu.register_c, 0b00000001);
     }
 
     #[test]
     fn set_2_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xD1]);
         assert_eq!(cpu.register_c, 0b00000100);
     }
 
     #[test]
     fn set_7_c() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xF9]);
         assert_eq!(cpu.register_c, 0b10000000);
     }
 
     #[test]
     fn set_7_d_doesnt_change_bit_if_already_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0xFA]);
         assert_eq!(cpu.register_d, 0b11111111);
     }
 
     #[test]
     fn ccf_cy_was_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00010000;
         cpu.run_test(vec![0x3F]);
         assert_eq!(cpu.register_f, 0b00000000);
@@ -3055,14 +3097,14 @@ mod tests {
 
     #[test]
     fn ccf_cy_was_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x3F]);
         assert_eq!(cpu.register_f, 0b10010000);
     }
 
     #[test]
     fn scf_cy_was_one() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00010000;
         cpu.run_test(vec![0x37]);
         assert_eq!(cpu.register_f, 0b00010000);
@@ -3070,14 +3112,14 @@ mod tests {
 
     #[test]
     fn scf_cy_was_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0x37]);
         assert_eq!(cpu.register_f, 0b10010000);
     }
 
     #[test]
     fn ei_takes_a_one_cycle_delay() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xFB]);
         assert_eq!(cpu.ime, false);
         cpu.run_test(vec![0x00]);
@@ -3086,7 +3128,7 @@ mod tests {
 
     #[test]
     fn di_stops_ei_during_delay() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xFB, 0xF3]);
         assert_eq!(cpu.ime, false);
     }
@@ -3094,7 +3136,7 @@ mod tests {
     #[test]
     fn halt_ends_after_interrupt() {
         // TODO: Test halt more when interrupts are full implemented
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // Queue vblank interrupt
         cpu.write(0xFF0F, 0x01);
         cpu.write(0xFFFF, 0x01);
@@ -3106,7 +3148,7 @@ mod tests {
 
     #[test]
     fn joypad_interrupt_is_handled() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // Queue joypad interrupt
         cpu.write(0xFF0F, 0x10);
         cpu.write(0xFFFF, 0x10);
@@ -3123,14 +3165,14 @@ mod tests {
 
     #[test]
     fn jp_nn() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xC3, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 0x8800);
     }
 
     #[test]
     fn jp_hl() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_h = 0xff;
         cpu.run_test(vec![0xE9]);
         assert_eq!(
@@ -3141,14 +3183,14 @@ mod tests {
 
     #[test]
     fn jp_z_nn_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCA, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 0x8800);
     }
 
     #[test]
     fn jp_z_nn_is_not_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00000000;
         cpu.run_test(vec![0xCA, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 259);
@@ -3156,7 +3198,7 @@ mod tests {
 
     #[test]
     fn jp_nz_nn_is_not_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00000000;
         cpu.run_test(vec![0xC2, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 0x8800);
@@ -3164,7 +3206,7 @@ mod tests {
 
     #[test]
     fn jp_nc_nn_does_not_have_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00000000;
         cpu.run_test(vec![0xD2, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 0x8800);
@@ -3172,7 +3214,7 @@ mod tests {
 
     #[test]
     fn jp_c_nn_does_not_have_carry() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.register_f = 0b00000000;
         cpu.run_test(vec![0xDA, 0x00, 0x88]);
         assert_eq!(cpu.program_counter, 259);
@@ -3180,7 +3222,7 @@ mod tests {
 
     #[test]
     fn jr_5_initial_pc_is_zero() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.program_counter = 0;
         cpu.run_test(vec![0x18, 0x03]);
         assert_eq!(cpu.program_counter, 5);
@@ -3188,7 +3230,7 @@ mod tests {
 
     #[test]
     fn jr_5_initial_pc_is_unchanged() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_pc = cpu.program_counter;
         cpu.run_test(vec![0x18, 0x03]);
         assert_eq!(cpu.program_counter, initial_pc + 5);
@@ -3196,7 +3238,7 @@ mod tests {
 
     #[test]
     fn jr_negative_3() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         // 1: jr 5       (jumps to line 4)
         // 2: ld a, b    (a := b = 0) only runs if line 4 is correct
         // 3: jr 5       (jumps ahead to end execution)
@@ -3207,7 +3249,7 @@ mod tests {
 
     #[test]
     fn jr_129_upper_limit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_pc = cpu.program_counter;
         cpu.run_test(vec![0x18, 0x7F]);
         assert_eq!(cpu.program_counter, initial_pc + 129);
@@ -3215,7 +3257,7 @@ mod tests {
 
     #[test]
     fn jr_negative_126_lower_limit() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.program_counter = 0;
         cpu.run_test(vec![0x18, 0x80]);
         assert_eq!(cpu.program_counter, 0xFFFF - 125);
@@ -3223,7 +3265,7 @@ mod tests {
 
     #[test]
     fn call_nn() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_sp = cpu.stack_pointer;
         cpu.run_test(vec![0xCD, 0x00, 0xFF]);
         assert_eq!(cpu.program_counter, 0xFF00);
@@ -3232,7 +3274,7 @@ mod tests {
 
     #[test]
     fn ret() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_sp = cpu.stack_pointer;
         // Write the program
         // ld a, b
@@ -3248,7 +3290,7 @@ mod tests {
 
     #[test]
     fn reti() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         let initial_sp = cpu.stack_pointer;
         cpu.write(0x0010, 0x78);
         cpu.write(0x0011, 0xD9);
@@ -3261,7 +3303,7 @@ mod tests {
 
     #[test]
     fn rst_38() {
-        let mut cpu = CPU::new();
+        let mut cpu = CPU::new_standalone();
         cpu.write(0x0038, 0x78);
         cpu.write(0x0039, 0xC9);
         cpu.run_test(vec![0xFF]);
