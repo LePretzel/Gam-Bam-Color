@@ -124,37 +124,6 @@ impl CPU {
         cpu
     }
 
-    pub fn load(&mut self, rom_path: &str) -> std::io::Result<()> {
-        const ROM_LIMIT: u16 = 0x8000;
-        let program = fs::read(rom_path)?;
-        for i in 0..program.len() {
-            if i >= ROM_LIMIT as usize {
-                break;
-            }
-            self.write(i as u16, program[i]);
-        }
-        Ok(())
-    }
-
-    pub fn run(&mut self) {
-        const ROM_LIMIT: u16 = 0x8000;
-        while self.program_counter < ROM_LIMIT {
-            if !self.halted {
-                let opcode = self.read(self.program_counter);
-                self.program_counter += 1;
-                self.execute(opcode);
-            }
-            self.handle_interrupts();
-        }
-    }
-
-    pub fn load_and_run(&mut self, rom_path: &str) {
-        let status = self.load(rom_path);
-        if let Ok(_) = status {
-            self.run();
-        }
-    }
-
     fn run_test(&mut self, program: Vec<u8>) {
         for (i, b) in program.iter().enumerate() {
             self.write(self.program_counter + i as u16, *b);
@@ -162,25 +131,28 @@ impl CPU {
 
         let initial_pc = self.program_counter as usize;
         while self.program_counter as usize <= initial_pc + program.len() - 1 {
-            if !self.halted {
-                let opcode = self.read(self.program_counter);
-                self.program_counter += 1;
-                self.execute(opcode);
-            }
+            self.execute();
             self.handle_interrupts();
         }
     }
 
-    fn execute(&mut self, opcode: u8) {
-        let inst = self.instructions[opcode as usize].inst.clone();
-        inst(self);
-        if let Some(num) = self.changed_cycles {
-            self.instructions[opcode as usize].cycles = num;
-            self.changed_cycles = None;
+    pub fn execute(&mut self) -> u8 {
+        let mut cycles = 1;
+        if !self.halted {
+            let opcode = self.read(self.program_counter);
+            self.program_counter += 1;
+            let inst = self.instructions[opcode as usize].inst.clone();
+            inst(self);
+            if let Some(num) = self.changed_cycles {
+                self.instructions[opcode as usize].cycles = num;
+                self.changed_cycles = None;
+            }
+            cycles = self.instructions[opcode as usize].cycles;
         }
+        cycles
     }
 
-    fn handle_interrupts(&mut self) {
+    pub fn handle_interrupts(&mut self) {
         if !self.ei_queue.is_empty() {
             if let Some(Some(b)) = self.ei_queue.pop_front() {
                 self.ime = b;
@@ -1820,56 +1792,56 @@ mod tests {
     #[test]
     fn ld_a_b() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0b01111000);
+        cpu.run_test(vec![0b01111000]);
         assert_eq!(cpu.register_a, 0x00);
     }
 
     #[test]
     fn ld_a_d() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0b01111010);
+        cpu.run_test(vec![0b01111010]);
         assert_eq!(cpu.register_a, 0xFF);
     }
 
     #[test]
     fn ld_b_l() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x45);
+        cpu.run_test(vec![0x45]);
         assert_eq!(cpu.register_b, 0x0D);
     }
 
     #[test]
     fn ld_c_a() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x4f);
+        cpu.run_test(vec![0x4f]);
         assert_eq!(cpu.register_c, 0x11);
     }
 
     #[test]
     fn ld_d_h() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x54);
+        cpu.run_test(vec![0x54]);
         assert_eq!(cpu.register_d, 0x00);
     }
 
     #[test]
     fn ld_e_c() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x59);
+        cpu.run_test(vec![0x59]);
         assert_eq!(cpu.register_e, 0x00);
     }
 
     #[test]
     fn ld_h_e() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x63);
+        cpu.run_test(vec![0x63]);
         assert_eq!(cpu.register_h, 0x56);
     }
 
     #[test]
     fn ld_l_a() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x6F);
+        cpu.run_test(vec![0x6F]);
         assert_eq!(cpu.register_l, 0x11);
     }
 
@@ -1959,7 +1931,7 @@ mod tests {
     #[test]
     fn ld_a_bc() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x0A);
+        cpu.run_test(vec![0x0A]);
         let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
         assert_eq!(cpu.register_a, val);
     }
@@ -1967,7 +1939,7 @@ mod tests {
     #[test]
     fn ld_a_de() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x1A);
+        cpu.run_test(vec![0x1A]);
         let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
         assert_eq!(cpu.register_a, val);
     }
@@ -1975,7 +1947,7 @@ mod tests {
     #[test]
     fn ld_bc_a() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x02);
+        cpu.run_test(vec![0x02]);
         let val = cpu.read(CPU::combine_bytes(cpu.register_b, cpu.register_c));
         assert_eq!(val, cpu.register_a);
     }
@@ -1983,7 +1955,7 @@ mod tests {
     #[test]
     fn ld_de_a() {
         let mut cpu = CPU::new_standalone();
-        cpu.execute(0x12);
+        cpu.run_test(vec![0x12]);
         let val = cpu.read(CPU::combine_bytes(cpu.register_d, cpu.register_e));
         assert_eq!(val, cpu.register_a);
     }
