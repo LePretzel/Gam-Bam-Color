@@ -88,55 +88,15 @@ impl CPU {
                 .push(Instruction::new(1, init_inst.clone()));
         }
 
-        map_instructions(&mut cpu);
-
-        cpu
-    }
-
-    fn new_standalone() -> Self {
-        let mut cpu = CPU {
-            register_a: 0x11,
-            register_f: 0x80,
-            register_b: 0x00,
-            register_c: 0x00,
-            register_d: 0xFF,
-            register_e: 0x56,
-            register_h: 0x00,
-            register_l: 0x0D,
-            stack_pointer: 0xFFFE,
-            program_counter: 0x0100,
-            memory: Rc::new(RefCell::new(MemManager::new())),
-            instructions: ArrayVec::new(),
-            halted: false,
-            ime: false,
-            ei_queue: VecDeque::new(),
-            changed_cycles: None,
-        };
-
-        let init_inst = Rc::new(|cpu: &mut CPU| {});
-        for _ in 0..cpu.instructions.capacity() {
-            cpu.instructions
-                .push(Instruction::new(1, init_inst.clone()));
-        }
+        const IF_ADDRESS: u16 = 0xFF0F;
+        cpu.memory.borrow_mut().write(IF_ADDRESS, 0xE1);
 
         map_instructions(&mut cpu);
 
         cpu
     }
 
-    fn run_test(&mut self, program: Vec<u8>) {
-        for (i, b) in program.iter().enumerate() {
-            self.write(self.program_counter + i as u16, *b);
-        }
-
-        let initial_pc = self.program_counter as usize;
-        while self.program_counter as usize <= initial_pc + program.len() - 1 {
-            self.execute();
-            self.handle_interrupts();
-        }
-    }
-
-    pub fn execute(&mut self) -> u8 {
+    pub fn execute(&mut self) -> u32 {
         let mut cycles = 1;
         if !self.halted {
             let opcode = self.read(self.program_counter);
@@ -147,12 +107,15 @@ impl CPU {
                 self.instructions[opcode as usize].cycles = num;
                 self.changed_cycles = None;
             }
-            cycles = self.instructions[opcode as usize].cycles;
+            cycles = self.instructions[opcode as usize].cycles as u32;
         }
-        cycles
+        cycles += self.handle_interrupts();
+
+        // Returns base clocks instead of m-cycles
+        cycles * 4
     }
 
-    pub fn handle_interrupts(&mut self) {
+    pub fn handle_interrupts(&mut self) -> u32 {
         if !self.ei_queue.is_empty() {
             if let Some(Some(b)) = self.ei_queue.pop_front() {
                 self.ime = b;
@@ -167,45 +130,62 @@ impl CPU {
         if interrupts != 0 {
             if !self.ime {
                 self.halted = false;
-                return;
+                return 0;
             }
 
             self.ime = false;
 
+            let handle_cycles = 5;
             // Vblank
             if interrupts & 0b00000001 == 1 {
                 self.write(0xFF0F, interrupt_flags & 0b11111110);
                 self.call(0x0040);
-                return;
+                return handle_cycles;
             }
 
             // STAT
             if (interrupts & 0b00000010) >> 1 == 1 {
                 self.write(0xFF0F, interrupt_flags & 0b11111101);
                 self.call(0x0048);
-                return;
+                return handle_cycles;
             }
 
             // Timer
             if (interrupts & 0b00000100) >> 2 == 1 {
                 self.write(0xFF0F, interrupt_flags & 0b11111011);
                 self.call(0x0050);
-                return;
+                return handle_cycles;
             }
 
             // Serial
             if (interrupts & 0b00001000) >> 3 == 1 {
                 self.write(0xFF0F, interrupt_flags & 0b11110111);
                 self.call(0x0058);
-                return;
+                return handle_cycles;
             }
 
             // Joypad
             if (interrupts & 0b00010000) >> 4 == 1 {
                 self.write(0xFF0F, interrupt_flags & 0b11101111);
                 self.call(0x0060);
-                return;
+                return handle_cycles;
             }
+        }
+        0
+    }
+
+    fn new_standalone() -> Self {
+        CPU::new(Rc::new(RefCell::new(MemManager::new())))
+    }
+
+    fn run_test(&mut self, program: Vec<u8>) {
+        for (i, b) in program.iter().enumerate() {
+            self.write(self.program_counter + i as u16, *b);
+        }
+
+        let initial_pc = self.program_counter as usize;
+        while self.program_counter as usize <= initial_pc + program.len() - 1 {
+            self.execute();
         }
     }
 

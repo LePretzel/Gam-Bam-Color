@@ -15,18 +15,25 @@ impl MemManager {
             memory: [0; 0xFFFF + 1],
         }
     }
+
+    pub fn force_write(&mut self, address: u16, data: u8) {
+        self.memory[address as usize] = data;
+    }
 }
+
+const DIV_ADDRESS: u16 = 0xFF04;
 
 impl Memory for MemManager {
     fn read(&self, address: u16) -> u8 {
         let data = self.memory[address as usize];
-        //println!("Read value {:x} from {:x}", data, address);
         data
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        //println!("Wrote value {:x} to {:x}", data, address);
-        self.memory[address as usize] = data;
+        match address {
+            x if x == DIV_ADDRESS => self.memory[address as usize] = 0,
+            _ => self.memory[address as usize] = data,
+        }
     }
 
     fn read_u16(&self, address: u16) -> u16 {
@@ -40,5 +47,17 @@ impl Memory for MemManager {
         let high = (data >> 8) as u8;
         self.write(address, low);
         self.write(address + 1, high);
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn writing_to_DIV_sets_it_to_zero() {
+        let mut mem = MemManager::new();
+        mem.write(DIV_ADDRESS, 0x45);
+        assert_eq!(mem.read(DIV_ADDRESS), 0x00);
     }
 }
