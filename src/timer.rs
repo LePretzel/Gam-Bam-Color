@@ -14,6 +14,7 @@ pub struct Timer {
     passed_cycles_div: u32,
     passed_cycles_tima: u32,
     interrupt_ready: bool,
+    set_to_tma_ready: bool,
 }
 
 impl Timer {
@@ -23,6 +24,7 @@ impl Timer {
             passed_cycles_div: 0,
             passed_cycles_tima: 0,
             interrupt_ready: false,
+            set_to_tma_ready: false,
         };
         timer.memory.borrow_mut().write(TIMA_ADDRESS, 0x00);
         timer.memory.borrow_mut().write(TMA_ADDRESS, 0x00);
@@ -67,14 +69,12 @@ impl Timer {
         while self.passed_cycles_tima >= tima_speed {
             if self.memory.borrow().read(TIMA_ADDRESS) == 0xFF {
                 self.interrupt_ready = true;
-                // Set to value of tma register
-                let tma = self.memory.borrow().read(TMA_ADDRESS);
-                self.memory.borrow_mut().write(TIMA_ADDRESS, tma);
-            } else {
-                self.increment(TIMA_ADDRESS);
+                self.set_to_tma_ready = true;
             }
+            self.increment(TIMA_ADDRESS);
             self.passed_cycles_tima -= tima_speed;
             self.send_interrupt_if_ready(self.passed_cycles_tima);
+            self.set_to_tma_if_ready(self.passed_cycles_tima);
         }
     }
 
@@ -91,6 +91,14 @@ impl Timer {
             self.memory
                 .borrow_mut()
                 .write(IF_ADDRESS, flags | 0b00000100);
+            self.interrupt_ready = false;
+        }
+    }
+
+    fn set_to_tma_if_ready(&mut self, remaining_cycles: u32) {
+        if self.set_to_tma_ready && remaining_cycles >= 4 {
+            let tma = self.memory.borrow().read(TMA_ADDRESS);
+            self.memory.borrow_mut().write(TIMA_ADDRESS, tma);
             self.interrupt_ready = false;
         }
     }
@@ -153,12 +161,22 @@ mod tests {
     }
 
     #[test]
-    fn tima_gets_set_to_tma() {
+    fn tima_does_not_get_set_to_tma_if_not_enough_cycles_for_delay() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
         tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
         tim.memory.borrow_mut().write(TMA_ADDRESS, 0x72);
         tim.update(256);
+        assert_eq!(read_div_and_tima(tim), (0x10, 0x00));
+    }
+
+    #[test]
+    fn tima_gets_set_to_tma_after_delay() {
+        let mut tim = get_test_timer();
+        tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
+        tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
+        tim.memory.borrow_mut().write(TMA_ADDRESS, 0x72);
+        tim.update(260);
         assert_eq!(read_div_and_tima(tim), (0x10, 0x72));
     }
 
