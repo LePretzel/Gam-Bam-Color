@@ -1,9 +1,7 @@
 mod cpu;
+mod emulator;
 mod memory;
+mod ppu;
+mod timer;
 
-fn main() {
-    let mut cpu = cpu::CPU::new();
-
-    cpu.load("./test_roms/ldrr.gb");
-    cpu.run();
-}
+fn main() {}

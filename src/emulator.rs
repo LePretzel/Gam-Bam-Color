@@ -4,12 +4,13 @@ use std::rc::Rc;
 
 use crate::cpu::CPU;
 use crate::memory::{MemManager, Memory};
+use crate::ppu::PPU;
 use crate::timer::Timer;
 
 pub struct Emulator {
     memory: Rc<RefCell<MemManager>>,
     cpu: CPU,
-    // ppu: PPU,
+    ppu: PPU,
     timer: Timer,
 }
 
@@ -19,7 +20,7 @@ impl Emulator {
         Emulator {
             memory: mem.clone(),
             cpu: CPU::new(mem.clone()),
-            // ppu: PPU::new(mem.clone()),
+            ppu: PPU::new(mem.clone()),
             timer: Timer::new(mem.clone()),
         }
     }
@@ -37,11 +38,10 @@ impl Emulator {
     }
 
     pub fn run(&mut self) {
-        let mut cycles: u32 = 0;
         loop {
-            cycles = self.cpu.execute();
+            let cycles = self.cpu.execute();
             self.timer.update(cycles);
-            //self.ppu.update(cycles);
+            self.ppu.update(cycles);
         }
     }
 
