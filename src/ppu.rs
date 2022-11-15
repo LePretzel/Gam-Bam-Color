@@ -21,12 +21,15 @@ pub struct PPU {
 
 impl PPU {
     pub fn new(memory: Rc<RefCell<MemManager>>) -> Self {
-        PPU {
-            mode: Rc::new(Scan),
+        let initial_mode = Rc::new(Scan);
+        let mut ppu = PPU {
+            mode: initial_mode.clone(),
             memory: memory.clone(),
             extra_dots: 0,
             mode_dots_passed: 0,
-        }
+        };
+        ppu.set_mode(initial_mode.clone());
+        ppu
     }
 
     pub fn update(&mut self, dots: u32) {

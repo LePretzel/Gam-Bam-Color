@@ -516,21 +516,44 @@ impl CPU {
     }
 }
 
+const STAT_ADDRESS: u16 = 0xFF41;
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
-        self.memory.borrow().read(address)
+        let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
+        let oam_locked = mode > 1;
+        let vram_locked = mode > 2;
+        let locked_read_value = 0xFF;
+        match address {
+            0x8000..=0x9FFF if vram_locked => locked_read_value,
+            0xFF68..=0xFF6B if vram_locked => locked_read_value,
+            0xFE00..=0xFE9F if oam_locked => locked_read_value,
+            _ => self.memory.borrow().read(address),
+        }
     }
 
     fn write(&mut self, address: u16, data: u8) {
-        self.memory.borrow_mut().write(address, data);
+        let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
+        let oam_locked = mode > 1;
+        let vram_locked = mode > 2;
+        match address {
+            0x8000..=0x9FFF if vram_locked => (),
+            0xFF68..=0xFF6B if vram_locked => (),
+            0xFE00..=0xFE9F if oam_locked => (),
+            _ => self.memory.borrow_mut().write(address, data),
+        }
     }
 
     fn read_u16(&self, address: u16) -> u16 {
-        self.memory.borrow().read_u16(address)
+        let low = self.read(address) as u16;
+        let high = self.read(address + 1) as u16;
+        (high << 8) | low
     }
 
     fn write_u16(&mut self, address: u16, data: u16) {
-        self.memory.borrow_mut().write_u16(address, data);
+        let low = data as u8;
+        let high = (data >> 8) as u8;
+        self.write(address, low);
+        self.write(address + 1, high);
     }
 }
 
@@ -3260,5 +3283,67 @@ mod tests {
         cpu.write(0x0039, 0xC9);
         cpu.run_test(vec![0xFF]);
         assert_eq!(cpu.register_a, 0);
+    }
+
+    #[test]
+    fn oam_read_blocked_during_mode_2() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000010);
+        assert_eq!(cpu.read(0xFE1A), 0xFF);
+    }
+
+    #[test]
+    fn only_oam_is_blocked_during_mode_2() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000010);
+        assert_eq!(cpu.read(0x8000), 0x00);
+    }
+
+    #[test]
+    fn oam_write_blocked_during_mode_2() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000010);
+        cpu.write(0xFE1A, 0x88);
+        cpu.write(STAT_ADDRESS, 0b00000000); // switch out of mode 2 to read
+        assert_eq!(cpu.read(0xFE1A), 0x00);
+    }
+
+    #[test]
+    fn oam_read_blocked_during_mode_3() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000011);
+        assert_eq!(cpu.read(0xFE00), 0xFF);
+    }
+
+    #[test]
+    fn vram_read_blocked_during_mode_3() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000011);
+        assert_eq!(cpu.read(0x8800), 0xFF);
+    }
+
+    #[test]
+    fn vram_write_blocked_during_mode_3() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000011);
+        cpu.write(0x8801, 0x88);
+        cpu.write(STAT_ADDRESS, 0b00000000); // switch out of mode 3 to read
+        assert_eq!(cpu.read(0x8801), 0x00);
+    }
+
+    #[test]
+    fn cgb_palettes_read_blocked_during_mode_3() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000011);
+        assert_eq!(cpu.read(0xFF68), 0xFF);
+    }
+
+    #[test]
+    fn cgb_palettes_write_blocked_during_mode_3() {
+        let mut cpu = CPU::new_standalone();
+        cpu.write(STAT_ADDRESS, 0b00000011);
+        cpu.write(0xFF6A, 0x88);
+        cpu.write(STAT_ADDRESS, 0b00000000); // switch out of mode 3 to read
+        assert_eq!(cpu.read(0xFF6A), 0x00);
     }
 }
