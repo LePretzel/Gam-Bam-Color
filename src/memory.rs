@@ -55,7 +55,7 @@ mod tests {
     use super::*;
 
     #[test]
-    fn writing_to_DIV_sets_it_to_zero() {
+    fn writing_to_div_sets_it_to_zero() {
         let mut mem = MemManager::new();
         mem.write(DIV_ADDRESS, 0x45);
         assert_eq!(mem.read(DIV_ADDRESS), 0x00);

@@ -11,8 +11,8 @@ const TAC_ADDRESS: u16 = 0xFF07;
 // TODO: implement more of the obscure timer behavior
 pub struct Timer {
     memory: Rc<RefCell<MemManager>>,
-    passed_cycles_div: u32,
-    passed_cycles_tima: u32,
+    available_cycles_div: u32,
+    available_cycles_tima: u32,
     interrupt_ready: bool,
     set_to_tma_ready: bool,
 }
@@ -21,8 +21,8 @@ impl Timer {
     pub fn new(memory: Rc<RefCell<MemManager>>) -> Self {
         let timer = Timer {
             memory,
-            passed_cycles_div: 0,
-            passed_cycles_tima: 0,
+            available_cycles_div: 0,
+            available_cycles_tima: 0,
             interrupt_ready: false,
             set_to_tma_ready: false,
         };
@@ -34,17 +34,17 @@ impl Timer {
     }
 
     pub fn update(&mut self, cycles: u32) {
-        self.passed_cycles_div += cycles;
-        self.passed_cycles_tima += cycles;
+        self.available_cycles_div += cycles;
+        self.available_cycles_tima += cycles;
         self.update_div();
         self.update_tima();
     }
 
     fn update_div(&mut self) {
         let div_speed = BASE_SPEED * 4;
-        while self.passed_cycles_div >= div_speed {
+        while self.available_cycles_div >= div_speed {
             self.increment(DIV_ADDRESS);
-            self.passed_cycles_div -= div_speed;
+            self.available_cycles_div -= div_speed;
         }
     }
 
@@ -66,15 +66,15 @@ impl Timer {
             return;
         };
         let tima_speed = BASE_SPEED * self.get_tima_speed();
-        while self.passed_cycles_tima >= tima_speed {
+        while self.available_cycles_tima >= tima_speed {
             if self.memory.borrow().read(TIMA_ADDRESS) == 0xFF {
                 self.interrupt_ready = true;
                 self.set_to_tma_ready = true;
             }
             self.increment(TIMA_ADDRESS);
-            self.passed_cycles_tima -= tima_speed;
-            self.send_interrupt_if_ready(self.passed_cycles_tima);
-            self.set_to_tma_if_ready(self.passed_cycles_tima);
+            self.available_cycles_tima -= tima_speed;
+            self.send_interrupt_if_ready(self.available_cycles_tima);
+            self.set_to_tma_if_ready(self.available_cycles_tima);
         }
     }
 

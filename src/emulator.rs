@@ -7,6 +7,8 @@ use crate::memory::{MemManager, Memory};
 use crate::ppu::PPU;
 use crate::timer::Timer;
 
+const DOTS_PER_FRAME: u32 = 70224;
+
 pub struct Emulator {
     memory: Rc<RefCell<MemManager>>,
     cpu: CPU,
@@ -38,10 +40,17 @@ impl Emulator {
     }
 
     pub fn run(&mut self) {
+        let mut dots = 0;
         loop {
-            let cycles = self.cpu.execute();
-            self.timer.update(cycles);
-            self.ppu.update(cycles);
+            if dots >= DOTS_PER_FRAME {
+                dots -= DOTS_PER_FRAME;
+                // sleep until time for frame to be displayed
+                // self.render(ppu.get_frame());
+            }
+            let curr_clocks = self.cpu.execute();
+            self.timer.update(curr_clocks);
+            self.ppu.update(curr_clocks);
+            dots += curr_clocks;
         }
     }
 
