@@ -9,6 +9,15 @@ const SCY_ADDRESS: u16 = 0xFF42;
 const SCX_ADDRESS: u16 = 0xFF43;
 const LY_ADDRESS: u16 = 0xFF44;
 const LYC_ADDRESS: u16 = 0xFF45;
+const BGP_ADDRESS: u16 = 0xFF47;
+const OBP0_ADDRESS: u16 = 0xFF48;
+const OBP1_ADDRESS: u16 = 0xFF49;
+const WY_ADDRESS: u16 = 0xFF4A;
+const WX_ADDRESS: u16 = 0xFF4B;
+const BCPS_ADDRESS: u16 = 0xFF68;
+const BCPD_ADDRESS: u16 = 0xFF69;
+const OCPS_ADDRESS: u16 = 0xFF6A;
+const OCPD_ADDRESS: u16 = 0xFF68;
 
 pub struct PPU {
     mode: Rc<dyn Mode>,
@@ -17,6 +26,7 @@ pub struct PPU {
     // completed_frame,
     extra_dots: u32,
     mode_dots_passed: u32,
+    objects_on_scanline: Vec<u16>,
 }
 
 impl PPU {
@@ -27,8 +37,12 @@ impl PPU {
             memory: memory.clone(),
             extra_dots: 0,
             mode_dots_passed: 0,
+            objects_on_scanline: Vec::new(),
         };
         ppu.set_mode(initial_mode.clone());
+
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0x91);
+        ppu.memory.borrow_mut().write(BGP_ADDRESS, 0xFC);
         ppu
     }
 
@@ -41,7 +55,10 @@ impl PPU {
         self.memory.borrow().read(LY_ADDRESS)
     }
 
-    // fn update_scanline **should check lyc=ly here as well
+    fn set_scanline(&mut self, value: u8) {
+        self.memory.borrow_mut().write(LY_ADDRESS, value);
+        self.check_coincidence_stat_interrupt();
+    }
 
     fn set_mode(&mut self, mode: Rc<dyn Mode>) {
         self.mode_dots_passed = 0;
@@ -115,6 +132,7 @@ impl Mode for HBlank {
             ppu.set_mode(Rc::new(VBlank));
         } else {
             ppu.set_mode(Rc::new(Scan));
+            ppu.set_scanline(ppu.current_scanline() + 1);
         }
     }
 
@@ -139,6 +157,7 @@ impl Mode for VBlank {
 
     fn transition(&self, ppu: &mut PPU) {
         ppu.set_mode(Rc::new(Scan));
+        ppu.set_scanline(0);
         // Todo: Finish frame and start new one
     }
 
@@ -148,9 +167,43 @@ impl Mode for VBlank {
 }
 
 struct Scan;
+
+impl Scan {
+    fn select_objects(&self, ppu: &mut PPU) {
+        ppu.objects_on_scanline.clear();
+        let large_objects = ppu.memory.borrow().read(LCDC_ADDRESS) & 0b00000100 == 4;
+        let oam_range = 0xFE00..=0xFE9F;
+        for address in (oam_range).step_by(4) {
+            if ppu.objects_on_scanline.len() == 10 {
+                break;
+            }
+            let mut object_start: i8 = (ppu.memory.borrow().read(address) as i8) - 16;
+            let object_size = if large_objects { 16 } else { 8 };
+            let object_end = object_start + object_size;
+            if object_end < 0 {
+                continue;
+            }
+            if object_start < 0 {
+                object_start = 0;
+            }
+            let object_pixel_range = (object_start as u8)..object_end as u8;
+            if object_pixel_range.contains(&ppu.current_scanline()) {
+                ppu.objects_on_scanline.push(address);
+            }
+        }
+    }
+}
+
 impl Mode for Scan {
     fn update(&self, ppu: &mut PPU, dots: u32) {
-        // oam scan
+        ppu.mode_dots_passed += dots;
+        if ppu.mode_dots_passed >= SCAN_TIME {
+            self.select_objects(ppu);
+            let leftover = ppu.mode_dots_passed - SCAN_TIME;
+            self.select_objects(ppu);
+            self.transition(ppu);
+            ppu.update(leftover);
+        }
     }
 
     fn transition(&self, ppu: &mut PPU) {
@@ -186,7 +239,13 @@ mod tests {
 
     fn get_test_ppu() -> PPU {
         let mem = Rc::new(RefCell::new(MemManager::new()));
-        PPU::new(mem)
+        PPU::new(mem.clone())
+    }
+
+    fn set_obj_y_pos(ppu: &mut PPU, obj_index: u8, scanline: u8) {
+        assert!(obj_index >= 0 && obj_index < 40);
+        let obj_y_address = 0xFE00 + ((obj_index * 4) as u16);
+        ppu.memory.borrow_mut().write(obj_y_address, scanline);
     }
 
     #[test]
@@ -257,5 +316,77 @@ mod tests {
         assert_eq!(ppu.mode.get_mode_number(), 0);
         ppu.update(40);
         assert_eq!(ppu.mode.get_mode_number(), 2);
+    }
+
+    #[test]
+    fn scan_mode_finds_an_object_on_scanline() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 85);
+        set_obj_y_pos(&mut ppu, 0, 100);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 1);
+    }
+
+    #[test]
+    fn scan_mode_wont_find_an_object_if_there_are_none_on_scanline() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 100);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 0);
+    }
+
+    #[test]
+    fn scan_mode_does_not_find_object_without_enough_cycles() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 85);
+        set_obj_y_pos(&mut ppu, 0, 100);
+        ppu.update(79);
+        assert!(ppu.objects_on_scanline.is_empty());
+    }
+
+    #[test]
+    fn objects_on_line_0_are_hidden() {
+        let mut ppu = get_test_ppu();
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 0);
+    }
+
+    #[test]
+    fn large_objects_on_line_0_are_hidden() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0x95);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 0);
+    }
+
+    #[test]
+    fn only_ten_objects_are_selected() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0x95);
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 85);
+        for i in 0..20 {
+            set_obj_y_pos(&mut ppu, i, 100);
+        }
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 10);
+    }
+
+    #[test]
+    fn same_sprite_on_two_different_rows() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0x95);
+        set_obj_y_pos(&mut ppu, 0, 2);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 1);
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 0);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 1);
+    }
+    #[test]
+    fn selects_object_if_only_first_row_is_on_scanline() {
+        let mut ppu = get_test_ppu();
+        set_obj_y_pos(&mut ppu, 0, 16);
+        ppu.update(80);
+        assert_eq!(ppu.objects_on_scanline.len(), 1);
     }
 }
