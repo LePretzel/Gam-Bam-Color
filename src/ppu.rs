@@ -18,19 +18,37 @@ const BCPS_ADDRESS: u16 = 0xFF68;
 const BCPD_ADDRESS: u16 = 0xFF69;
 const OCPS_ADDRESS: u16 = 0xFF6A;
 const OCPD_ADDRESS: u16 = 0xFF68;
+const VBK_ADDRESS: u16 = 0xFF4F;
 
-type Pixel = u16;
+#[derive(Clone, Copy)]
+struct ObjectPixel {
+    color: u8,
+    palette: u8,
+    sprite_prio: u8,
+    bg_prio: bool,
+}
 
+#[derive(Clone, Copy)]
+struct BackgroundPixel {
+    color: u8,
+    palette: u8,
+}
+
+type RenderedPixel = u16;
+
+// Todo: Implement ppu vram blocking
+// Todo: Implement window rendering behavior from mode 3 operation section in docs
+// Todo: More complex behavior for cgb palette access
 pub struct PPU {
-    mode: Rc<RefCell<dyn Mode>>,
+    mode: Rc<RefCell<dyn PPUMode>>,
     memory: Rc<RefCell<MemManager>>,
-    current_frame: Vec<Pixel>,
-    completed_frame: Vec<Pixel>,
+    current_frame: Vec<RenderedPixel>,
+    completed_frame: Vec<RenderedPixel>,
     extra_dots: u32,
     mode_dots_passed: u32,
     objects_on_scanline: Vec<u16>,
-    object_pixel_queue: VecDeque<Pixel>,
-    background_pixel_queue: VecDeque<Pixel>,
+    object_pixel_queue: VecDeque<ObjectPixel>,
+    background_pixel_queue: VecDeque<BackgroundPixel>,
 }
 
 impl PPU {
@@ -68,7 +86,7 @@ impl PPU {
         self.check_coincidence_stat_interrupt();
     }
 
-    fn set_mode(&mut self, mode: Rc<RefCell<dyn Mode>>) {
+    fn set_mode(&mut self, mode: Rc<RefCell<dyn PPUMode>>) {
         self.mode_dots_passed = 0;
         self.mode = mode.clone();
         self.check_vblank_interrupt();
@@ -120,7 +138,7 @@ impl PPU {
     }
 }
 
-trait Mode {
+trait PPUMode {
     fn update(&mut self, ppu: &mut PPU, dots: u32);
     fn transition(&self, ppu: &mut PPU);
     fn get_mode_number(&self) -> u8;
@@ -129,7 +147,7 @@ trait Mode {
 struct HBlank {
     dots_until_transition: u32,
 }
-impl Mode for HBlank {
+impl PPUMode for HBlank {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {
         ppu.mode_dots_passed += dots;
         if ppu.mode_dots_passed >= self.dots_until_transition {
@@ -160,7 +178,7 @@ const SCAN_TIME: u32 = 80;
 const DRAW_PLUS_HBLANK_TIME: u32 = 376;
 
 struct VBlank;
-impl Mode for VBlank {
+impl PPUMode for VBlank {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {
         ppu.mode_dots_passed += dots;
         if ppu.mode_dots_passed >= V_BLANK_TIME {
@@ -172,7 +190,6 @@ impl Mode for VBlank {
 
     fn transition(&self, ppu: &mut PPU) {
         ppu.set_mode(Rc::new(RefCell::new(Scan)));
-        ppu.clear_pixel_queues();
         ppu.set_scanline(0);
         // Todo: Finish frame and start new one
     }
@@ -210,7 +227,7 @@ impl Scan {
     }
 }
 
-impl Mode for Scan {
+impl PPUMode for Scan {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {
         ppu.mode_dots_passed += dots;
         if ppu.mode_dots_passed >= SCAN_TIME {
@@ -224,6 +241,7 @@ impl Mode for Scan {
 
     fn transition(&self, ppu: &mut PPU) {
         let initial_draw_time = 172;
+        ppu.clear_pixel_queues();
         ppu.set_mode(Rc::new(RefCell::new(Draw {
             dots_until_transition: initial_draw_time,
             fetcher: Fetcher::new(),
@@ -276,6 +294,13 @@ impl Fetcher {
         ppu.memory.borrow().read(tilemap_start + tile_position)
     }
 
+    fn get_tile_attributes(&mut self, ppu: &mut PPU) -> u8 {
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
+        let attrs = self.get_tile_index(ppu);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+        attrs
+    }
+
     fn get_tile_data(&self, ppu: &PPU, index: u8, is_object: bool) -> u8 {
         let lcdc = ppu.memory.borrow().read(LCDC_ADDRESS);
         let signed_addressing = !is_object && lcdc & 0b00010000 == 0;
@@ -292,13 +317,53 @@ impl Fetcher {
         let row_offset = (ppu.current_scanline() % 8) * 2;
         ppu.memory.borrow().read(base_address + row_offset as u16)
     }
+
+    fn get_pixels_from_tile_data(tile_data_low: u8, tile_data_high: u8) -> VecDeque<u8> {
+        let mut pixels = VecDeque::new();
+        for i in 0..8 {
+            let mask = 0b00000001 << i;
+            let low_pixel_bit = (mask & tile_data_low) >> i;
+            let high_pixel_bit = (mask & tile_data_high) >> i;
+            pixels.push_back(low_pixel_bit + (high_pixel_bit << 1));
+        }
+        pixels
+    }
+
+    fn push_background_pixels(ppu: &mut PPU, mut pixels: VecDeque<u8>, attrs: u8) {
+        if !ppu.background_pixel_queue.is_empty() {
+            return;
+        }
+
+        let is_flipped_horizontal = attrs & 0b00010000 != 0;
+        let background_palette = attrs & 0b00000111;
+        if is_flipped_horizontal {
+            for _ in 0..8 {
+                ppu.background_pixel_queue.push_back(BackgroundPixel {
+                    color: pixels.pop_front().unwrap(),
+                    palette: background_palette,
+                });
+            }
+        } else {
+            for _ in 0..8 {
+                ppu.background_pixel_queue.push_back(BackgroundPixel {
+                    color: pixels.pop_back().unwrap(),
+                    palette: background_palette,
+                })
+            }
+        }
+    }
 }
 
 struct Draw {
     dots_until_transition: u32,
     fetcher: Fetcher,
 }
-impl Mode for Draw {
+
+impl Draw {
+    
+}
+
+impl PPUMode for Draw {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {}
 
     fn transition(&self, ppu: &mut PPU) {
@@ -651,5 +716,9 @@ mod tests {
         let fetcher = Fetcher::new();
         let result = fetcher.get_tile_data(&ppu, 1, false);
         assert_eq!(result, 0x11);
+
+        for i in (8..0).rev() {
+            println!("{i}");
+        }
     }
 }
