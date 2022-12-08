@@ -1,5 +1,3 @@
-use std::ops::Div;
-
 pub trait Memory {
     fn read(&self, address: u16) -> u8;
     fn write(&mut self, address: u16, data: u8);
@@ -9,14 +7,14 @@ pub trait Memory {
 
 pub struct MemManager {
     memory: [u8; 0xFFFF + 1],
-    vram_bank_one: [u8; 0x400],
+    vram_bank_one: [u8; 0x2000 + 1],
 }
 
 impl MemManager {
     pub fn new() -> Self {
         MemManager {
             memory: [0; 0xFFFF + 1],
-            vram_bank_one: [0; 0x400],
+            vram_bank_one: [0; 0x2000 + 1],
         }
     }
 
