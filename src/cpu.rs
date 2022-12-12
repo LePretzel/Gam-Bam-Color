@@ -535,6 +535,11 @@ impl Memory for CPU {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
         let oam_locked = mode > 1;
         let vram_locked = mode > 2;
+        // For debugging: remove later
+        if address == 0xFF02 && data == 0x81 {
+            println!("{}", self.read(0xFF01) as char);
+        }
+        //
         match address {
             0x8000..=0x9FFF if vram_locked => (),
             0xFF68..=0xFF6B if vram_locked => (),
@@ -1239,12 +1244,13 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0x34] = Instruction::new(
         3,
         Rc::new(move |cpu: &mut CPU| {
-            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            let initial_value = cpu.read(hl);
             let initial_carry_bit = 0b00010000 & cpu.register_f;
             let mut sum = Wrapping(initial_value);
             sum += 1;
-            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
-            cpu.update_flags_add(cpu.register_a, 1);
+            cpu.write(hl, sum.0);
+            cpu.update_flags_add(initial_value, 1);
             cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
         }),
     );
@@ -1264,7 +1270,7 @@ fn map_instructions(cpu: &mut CPU) {
                     let mut sum = Wrapping(reg_value);
                     sum -= 1;
                     *reg = sum.0;
-                    cpu.update_flags_sub(cpu.register_a, 1);
+                    cpu.update_flags_sub(reg_value, CPU::negate(1));
                     cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
                 }
             }),
@@ -1275,12 +1281,13 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0x35] = Instruction::new(
         3,
         Rc::new(move |cpu: &mut CPU| {
-            let initial_value = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
+            let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
+            let initial_value = cpu.read(hl);
             let initial_carry_bit = 0b00010000 & cpu.register_f;
             let mut sum = Wrapping(initial_value);
             sum -= 1;
-            cpu.write(CPU::combine_bytes(cpu.register_h, cpu.register_l), sum.0);
-            cpu.update_flags_sub(cpu.register_a, 1);
+            cpu.write(hl, sum.0);
+            cpu.update_flags_sub(initial_value, CPU::negate(1));
             cpu.register_f = (cpu.register_f & 0b11101111) | initial_carry_bit;
         }),
     );
@@ -1716,6 +1723,8 @@ fn map_instructions(cpu: &mut CPU) {
                 if cpu.test_condition_code(i - 0x20) {
                     cpu.jr();
                     cpu.changed_cycles = Some(2);
+                } else {
+                    cpu.program_counter += 1;
                 }
             }),
         );
@@ -2600,6 +2609,15 @@ mod tests {
     }
 
     #[test]
+    fn inc_sets_zero_flag() {
+        let mut cpu = CPU::new_standalone();
+        // ld b 0xFF
+        // inc b
+        cpu.run_test(vec![0x06, 0xFF, 0x04]);
+        assert_eq!(cpu.register_f & 0b10000000, 128);
+    }
+
+    #[test]
     fn inc_hl() {
         let mut cpu = CPU::new_standalone();
         // ld (hl) 0x02
@@ -2657,6 +2675,14 @@ mod tests {
         cpu.run_test(vec![0x05]);
         let carry_bit = 0b00010000 & cpu.register_f;
         assert_eq!(carry_bit, initial_carry_bit);
+    }
+
+    #[test]
+    fn dec_sets_zero_flag() {
+        let mut cpu = CPU::new_standalone();
+        cpu.register_b = 1;
+        cpu.run_test(vec![0x05]);
+        assert_eq!(cpu.register_f & 0b10000000, 128);
     }
 
     #[test]
