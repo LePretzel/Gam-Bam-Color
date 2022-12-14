@@ -25,6 +25,16 @@ impl MemManager {
     pub fn force_write(&mut self, address: u16, data: u8) {
         self.memory[address as usize] = data;
     }
+
+    pub fn print_memory(&self, start: u16, end: u16) {
+        for (i, address) in (start..end).enumerate() {
+            if i > 0 && i % 16 == 0 {
+                println!();
+            }
+            print!("{:#04x} ", self.memory[address as usize]);
+        }
+        println!()
+    }
 }
 
 const DIV_ADDRESS: u16 = 0xFF04;
