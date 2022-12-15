@@ -2,12 +2,18 @@ use std::cell::RefCell;
 use std::fs;
 use std::rc::Rc;
 
+use sdl2::pixels::PixelFormatEnum;
+
 use crate::cpu::CPU;
 use crate::memory::{MemManager, Memory};
 use crate::ppu::PPU;
 use crate::timer::Timer;
 
 const DOTS_PER_FRAME: u32 = 70224;
+const SCREEN_WIDTH: u32 = 160;
+const SCREEN_HEIGHT: u32 = 144;
+const HORIZONTAL_SCALE: u32 = 5;
+const VERTICAL_SCALE: u32 = 5;
 
 pub struct Emulator {
     memory: Rc<RefCell<MemManager>>,
@@ -40,12 +46,39 @@ impl Emulator {
     }
 
     pub fn run(&mut self) {
+        let sdl_context = sdl2::init().unwrap();
+        let video_subsystem = sdl_context.video().unwrap();
+        let window = video_subsystem
+            .window(
+                "Gam Bam Color",
+                SCREEN_WIDTH * HORIZONTAL_SCALE,
+                SCREEN_HEIGHT * VERTICAL_SCALE,
+            )
+            .position_centered()
+            .build()
+            .unwrap();
+
+        let mut event_pump = sdl_context.event_pump().unwrap();
+        let mut canvas = window.into_canvas().build().unwrap();
+
+        let creator = canvas.texture_creator();
+        let mut texture = creator
+            .create_texture_target(PixelFormatEnum::RGB555, SCREEN_WIDTH, SCREEN_HEIGHT)
+            .unwrap();
+
         let mut dots = 0;
         loop {
+            for e in event_pump.poll_iter() {}
             if dots >= DOTS_PER_FRAME {
                 dots -= DOTS_PER_FRAME;
-                // sleep until time for frame to be displayed
-                // self.render(ppu.get_frame());
+                // Todo: sleep until time for frame to be displayed
+
+                let frame = self.ppu.get_frame();
+                texture
+                    .update(None, &frame, (SCREEN_WIDTH * 2) as usize)
+                    .unwrap();
+                canvas.copy(&texture, None, None).unwrap();
+                canvas.present();
             }
             let curr_clocks = self.cpu.execute();
             self.timer.update(curr_clocks);
