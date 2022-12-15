@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
 use crate::memory::{MemManager, Memory};
+use crate::ppu::FetcherStage::{DataHigh, DataLow, GetTile, Push};
 
 const IF_ADDRESS: u16 = 0xFF0F;
 const LCDC_ADDRESS: u16 = 0xFF40;
@@ -34,17 +35,17 @@ struct BackgroundPixel {
     palette: u8,
 }
 
-type RenderedPixel = u16;
+type RenderedPixel = u8;
 
 // Todo: Implement ppu vram blocking
-// Todo: Implement window rendering behavior from mode 3 operation section in docs
+// Todo: Implement window rendering penalty
 // Todo: More complex behavior for cgb palette access
+// Todo: Original gameboy compatibility
 pub struct PPU {
     mode: Rc<RefCell<dyn PPUMode>>,
     memory: Rc<RefCell<MemManager>>,
     current_frame: Vec<RenderedPixel>,
     completed_frame: Vec<RenderedPixel>,
-    extra_dots: u32,
     mode_dots_passed: u32,
     objects_on_scanline: Vec<u16>,
     object_pixel_queue: VecDeque<ObjectPixel>,
@@ -59,11 +60,10 @@ impl PPU {
             memory: memory.clone(),
             current_frame: Vec::new(),
             completed_frame: Vec::new(),
-            extra_dots: 0,
             mode_dots_passed: 0,
             objects_on_scanline: Vec::new(),
-            object_pixel_queue: VecDeque::new(),
-            background_pixel_queue: VecDeque::new(),
+            object_pixel_queue: VecDeque::with_capacity(16),
+            background_pixel_queue: VecDeque::with_capacity(16),
         };
         ppu.set_mode(initial_mode.clone());
 
@@ -75,6 +75,10 @@ impl PPU {
     pub fn update(&mut self, dots: u32) {
         let m = self.mode.clone();
         m.borrow_mut().update(self, dots);
+    }
+
+    pub fn get_frame(&self) -> Vec<u8> {
+        self.completed_frame.clone()
     }
 
     fn current_scanline(&self) -> u8 {
@@ -191,7 +195,8 @@ impl PPUMode for VBlank {
     fn transition(&self, ppu: &mut PPU) {
         ppu.set_mode(Rc::new(RefCell::new(Scan)));
         ppu.set_scanline(0);
-        // Todo: Finish frame and start new one
+        ppu.completed_frame = ppu.current_frame.clone();
+        ppu.current_frame.clear();
     }
 
     fn get_mode_number(&self) -> u8 {
@@ -233,19 +238,22 @@ impl PPUMode for Scan {
         if ppu.mode_dots_passed >= SCAN_TIME {
             self.select_objects(ppu);
             let leftover = ppu.mode_dots_passed - SCAN_TIME;
-            self.select_objects(ppu);
             self.transition(ppu);
             ppu.update(leftover);
         }
     }
 
     fn transition(&self, ppu: &mut PPU) {
-        let initial_draw_time = 172;
         ppu.clear_pixel_queues();
-        ppu.set_mode(Rc::new(RefCell::new(Draw {
-            dots_until_transition: initial_draw_time,
+        let new_mode = Rc::new(RefCell::new(Draw {
             fetcher: Fetcher::new(),
-        })));
+            screen_x: 0,
+        }));
+        // Perform one fetch early for timing purposes
+        for _ in 0..6 {
+            new_mode.borrow_mut().fetcher.tick(ppu);
+        }
+        ppu.set_mode(new_mode.clone());
     }
 
     fn get_mode_number(&self) -> u8 {
@@ -253,13 +261,123 @@ impl PPUMode for Scan {
     }
 }
 
+enum FetcherStage {
+    GetTile,
+    DataLow,
+    DataHigh,
+    Push,
+}
+
 struct Fetcher {
     tilemap_col: u8,
+    sprites_to_fetch: VecDeque<u16>,
+    dots_since_fetch_start: u32,
+    stage: FetcherStage,
+    tile_index: Option<u8>,
+    tile_data_low: Option<u8>,
+    tile_data_high: Option<u8>,
+    current_sprite: Option<u16>,
+    is_fetching_object: bool,
+    was_fetching_bg: bool,
 }
 
 impl Fetcher {
     fn new() -> Self {
-        Self { tilemap_col: 0 }
+        Self {
+            tilemap_col: 0,
+            sprites_to_fetch: VecDeque::new(),
+            dots_since_fetch_start: 0,
+            stage: GetTile,
+            tile_index: None,
+            tile_data_low: None,
+            tile_data_high: None,
+            current_sprite: None,
+            is_fetching_object: false,
+            was_fetching_bg: true,
+        }
+    }
+
+    fn tick(&mut self, ppu: &mut PPU) {
+        self.dots_since_fetch_start += 1;
+        let current_dots = if self.is_fetching_object && self.was_fetching_bg {
+            // Sprite fetches overlap background fetches by one dot.
+            // This effectively means sprite fetches take one dot less if they follow
+            // background fetches.
+            self.dots_since_fetch_start + 1
+        } else {
+            self.dots_since_fetch_start
+        };
+
+        match self.stage {
+            GetTile => {
+                if current_dots == 2 {
+                    self.tile_index = match self.is_fetching_object {
+                        true => {
+                            self.current_sprite = self.sprites_to_fetch.pop_front();
+                            Some(ppu.memory.borrow().read(self.current_sprite.unwrap() + 2))
+                        }
+                        false => Some(self.get_tile_index(ppu)),
+                    };
+                    self.tilemap_col += 1;
+                    self.stage = DataLow;
+                }
+            }
+            DataLow => {
+                if current_dots == 4 {
+                    self.tile_data_low = Some(self.get_tile_data(
+                        ppu,
+                        self.tile_index.unwrap(),
+                        false,
+                        self.is_fetching_object,
+                    ));
+                    self.stage = DataHigh;
+                }
+            }
+            DataHigh => {
+                if current_dots == 6 {
+                    self.tile_data_high = Some(self.get_tile_data(
+                        ppu,
+                        self.tile_index.unwrap(),
+                        true,
+                        self.is_fetching_object,
+                    ));
+                    self.stage = Push;
+                    // Check if ready to push immediately
+                    self.tick(ppu);
+                }
+            }
+            Push => {
+                let pixels = self.get_pixels_from_tile_data(
+                    self.tile_data_low.unwrap(),
+                    self.tile_data_high.unwrap(),
+                );
+                match self.is_fetching_object {
+                    true => {
+                        ppu.object_pixel_queue.clear();
+                        self.push_object_pixels(ppu, pixels);
+                        self.start_new_fetch(ppu);
+                    }
+                    false => {
+                        if ppu.background_pixel_queue.len() <= 8 {
+                            let attrs = self.get_bg_tile_attributes(ppu);
+                            self.push_background_pixels(ppu, pixels, attrs);
+                            self.start_new_fetch(ppu);
+                        }
+                    }
+                }
+            }
+        }
+    }
+
+    fn start_new_fetch(&mut self, ppu: &PPU) {
+        self.was_fetching_bg = !self.is_fetching_object;
+        self.is_fetching_object = self.is_sprite_queued() && ppu.background_pixel_queue.len() >= 8;
+        self.stage = GetTile;
+        self.tile_index = None;
+        self.tile_data_low = None;
+        self.tile_data_high = None;
+        self.current_sprite = None;
+        self.dots_since_fetch_start = 0;
     }
 
     fn get_tile_index(&mut self, ppu: &PPU) -> u8 {
@@ -290,18 +408,17 @@ impl Fetcher {
         let tilemap_y = (ppu.current_scanline().wrapping_add(screen_offset_y) / 8) as u16;
         let tile_position = tilemap_y * tilemap_row_width + tilemap_x;
 
-        self.tilemap_col += 1;
         ppu.memory.borrow().read(tilemap_start + tile_position)
     }
 
-    fn get_tile_attributes(&mut self, ppu: &mut PPU) -> u8 {
+    fn get_bg_tile_attributes(&mut self, ppu: &PPU) -> u8 {
         ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
         let attrs = self.get_tile_index(ppu);
         ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
         attrs
     }
 
-    fn get_tile_data(&self, ppu: &PPU, index: u8, is_object: bool) -> u8 {
+    fn get_tile_data(&mut self, ppu: &PPU, index: u8, is_high_byte: bool, is_object: bool) -> u8 {
         let lcdc = ppu.memory.borrow().read(LCDC_ADDRESS);
         let signed_addressing = !is_object && lcdc & 0b00010000 == 0;
         let base_address = if signed_addressing {
@@ -310,15 +427,42 @@ impl Fetcher {
             } else {
                 index as i32
             };
-            (0x9000 + signed_index) as u16
+            (0x9000 + signed_index * 16) as u16
         } else {
-            0x8000 + index as u16
+            0x8000 + (index as u16) * 16
         };
-        let row_offset = (ppu.current_scanline() % 8) * 2;
-        ppu.memory.borrow().read(base_address + row_offset as u16)
+
+        let attrs = if is_object {
+            let sprite_address = self.current_sprite.unwrap();
+            ppu.memory.borrow().read(sprite_address + 3)
+        } else {
+            self.get_bg_tile_attributes(ppu)
+        };
+
+        let is_flipped_vertically = attrs & 0b01000000 != 0;
+        let row_offset = if is_flipped_vertically {
+            (7 - (ppu.current_scanline() % 8)) * 2
+        } else {
+            (ppu.current_scanline() % 8) * 2
+        };
+        let high_byte_offset = if is_high_byte { 1 } else { 0 };
+        let uses_vram_bank_one = attrs & 0b00001000 != 0;
+        if uses_vram_bank_one {
+            ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
+            let data = ppu
+                .memory
+                .borrow()
+                .read(base_address + high_byte_offset + row_offset as u16);
+            ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+            data
+        } else {
+            ppu.memory
+                .borrow()
+                .read(base_address + high_byte_offset + row_offset as u16)
+        }
     }
 
-    fn get_pixels_from_tile_data(tile_data_low: u8, tile_data_high: u8) -> VecDeque<u8> {
+    fn get_pixels_from_tile_data(&self, tile_data_low: u8, tile_data_high: u8) -> VecDeque<u8> {
         let mut pixels = VecDeque::new();
         for i in 0..8 {
             let mask = 0b00000001 << i;
@@ -329,42 +473,158 @@ impl Fetcher {
         pixels
     }
 
-    fn push_background_pixels(ppu: &mut PPU, mut pixels: VecDeque<u8>, attrs: u8) {
-        if !ppu.background_pixel_queue.is_empty() {
-            return;
+    fn push_background_pixels(&self, ppu: &mut PPU, mut pixels: VecDeque<u8>, attrs: u8) {
+        let is_flipped_horizontal = attrs & 0b00100000 != 0;
+        let mut pop_pixel = || {
+            if is_flipped_horizontal {
+                pixels.pop_front()
+            } else {
+                pixels.pop_back()
+            }
+        };
+
+        let palette = attrs & 0b00000111;
+        for _ in 0..8 {
+            let color = pop_pixel().unwrap();
+            ppu.background_pixel_queue
+                .push_back(BackgroundPixel { color, palette });
         }
+    }
+
+    fn push_object_pixels(&self, ppu: &mut PPU, mut pixels: VecDeque<u8>) {
+        let sprite_address = self.current_sprite.unwrap();
+        let attrs = ppu.memory.borrow().read(sprite_address + 3);
 
         let is_flipped_horizontal = attrs & 0b00010000 != 0;
-        let background_palette = attrs & 0b00000111;
-        if is_flipped_horizontal {
-            for _ in 0..8 {
-                ppu.background_pixel_queue.push_back(BackgroundPixel {
-                    color: pixels.pop_front().unwrap(),
-                    palette: background_palette,
-                });
+        let mut push = |pixel| {
+            if is_flipped_horizontal {
+                ppu.object_pixel_queue.push_back(pixel);
+            } else {
+                ppu.object_pixel_queue.push_front(pixel);
             }
-        } else {
-            for _ in 0..8 {
-                ppu.background_pixel_queue.push_back(BackgroundPixel {
-                    color: pixels.pop_back().unwrap(),
-                    palette: background_palette,
-                })
-            }
+        };
+
+        let palette = attrs & 0b00000111;
+        let bg_prio = if attrs & 0b10000000 != 0 { true } else { false };
+        let sprite_prio = ((sprite_address - 0xFE00) / 4) as u8;
+        for _ in 0..8 {
+            let color = pixels.pop_back().unwrap();
+            push(ObjectPixel {
+                color,
+                palette,
+                sprite_prio,
+                bg_prio,
+            })
         }
+    }
+
+    fn is_sprite_queued(&self) -> bool {
+        !self.sprites_to_fetch.is_empty()
+    }
+
+    fn schedule_sprite_fetch(&mut self, object_address: u16) {
+        self.sprites_to_fetch.push_back(object_address);
     }
 }
 
 struct Draw {
-    dots_until_transition: u32,
     fetcher: Fetcher,
+    screen_x: u8,
 }
 
 impl Draw {
-    
+    fn tick(&mut self, ppu: &mut PPU) -> bool {
+        ppu.mode_dots_passed += 1;
+
+        if ppu.background_pixel_queue.len() > 8 && !self.fetcher.is_sprite_queued() {
+            // Throw away the pixels that are cut off by screen scroll
+            if ppu.mode_dots_passed <= (ppu.memory.borrow().read(SCX_ADDRESS) % 8) as u32 {
+                let _ = ppu.background_pixel_queue.pop_front();
+                if !ppu.background_pixel_queue.is_empty() {
+                    let _ = ppu.object_pixel_queue.pop_front();
+                }
+            } else if self.screen_x < 160 {
+                // Stop pushing to lcd at x >= 160 but keep running for 6 more dots
+                // to simulate the fetch of the final tile that would be offscreen
+                self.push_pixel_to_lcd(ppu);
+            }
+
+            // Check for objects in this position before moving on
+            ppu.objects_on_scanline.reverse();
+            for object_address in &ppu.objects_on_scanline {
+                let object_end = ppu.memory.borrow().read(object_address + 1);
+                if object_end < 8 {
+                    continue;
+                }
+                let object_start = object_end - 8;
+                if object_start == self.screen_x + ppu.memory.borrow().read(SCX_ADDRESS) {
+                    self.fetcher.schedule_sprite_fetch(*object_address);
+                }
+            }
+            self.screen_x += 1;
+
+            if self.screen_x >= 166 {
+                return false;
+            }
+        }
+        self.fetcher.tick(ppu);
+        return true;
+    }
+
+    fn render_object_pixel(&self, ppu: &mut PPU, pixel: ObjectPixel) -> Vec<u8> {
+        let color_index = (4 * pixel.palette + pixel.color) * 2;
+        let ocps_value = ppu.memory.borrow().read(OCPS_ADDRESS);
+        ppu.memory.borrow_mut().write(OCPS_ADDRESS, color_index);
+        let high_byte = ppu.memory.borrow().read(OCPD_ADDRESS);
+        ppu.memory.borrow_mut().write(OCPS_ADDRESS, color_index + 1);
+        let low_byte = ppu.memory.borrow().read(OCPD_ADDRESS);
+        ppu.memory.borrow_mut().write(OCPS_ADDRESS, ocps_value);
+        vec![high_byte, low_byte]
+    }
+
+    fn render_background_pixel(&self, ppu: &mut PPU, pixel: BackgroundPixel) -> Vec<u8> {
+        let color_index = (4 * pixel.palette + pixel.color) * 2;
+        let bcps_value = ppu.memory.borrow().read(BCPS_ADDRESS);
+        ppu.memory.borrow_mut().write(BCPS_ADDRESS, color_index);
+        let high_byte = ppu.memory.borrow().read(BCPD_ADDRESS);
+        ppu.memory.borrow_mut().write(BCPS_ADDRESS, color_index + 1);
+        let low_byte = ppu.memory.borrow().read(BCPD_ADDRESS);
+        ppu.memory.borrow_mut().write(BCPS_ADDRESS, bcps_value);
+        vec![high_byte, low_byte]
+    }
+
+    fn push_pixel_to_lcd(&self, ppu: &mut PPU) {
+        assert!(ppu.background_pixel_queue.len() > 8);
+        let obj_pixel = ppu.object_pixel_queue.pop_front();
+        if let Some(pixel) = obj_pixel {
+            if !pixel.bg_prio && pixel.color != 0 {
+                let rendered_pixel = self.render_object_pixel(ppu, pixel);
+                for i in rendered_pixel.iter() {
+                    ppu.current_frame.push(*i);
+                }
+                return;
+            }
+        }
+        let bg_pixel = ppu.background_pixel_queue.pop_front();
+        let rendered_pixel = self.render_background_pixel(ppu, bg_pixel.unwrap());
+        for i in rendered_pixel.iter() {
+            ppu.current_frame.push(*i);
+        }
+    }
 }
 
 impl PPUMode for Draw {
-    fn update(&mut self, ppu: &mut PPU, dots: u32) {}
+    fn update(&mut self, ppu: &mut PPU, dots: u32) {
+        for used_dots in 1..=dots {
+            let currently_drawing = self.tick(ppu);
+            if !currently_drawing {
+                let leftover = dots - used_dots;
+                self.transition(ppu);
+                ppu.update(leftover);
+                break;
+            }
+        }
+    }
 
     fn transition(&self, ppu: &mut PPU) {
         let hblank_time = DRAW_PLUS_HBLANK_TIME - ppu.mode_dots_passed;
@@ -524,6 +784,7 @@ mod tests {
         ppu.update(80);
         assert_eq!(ppu.objects_on_scanline.len(), 1);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0);
+        ppu.set_mode(Rc::new(RefCell::new(Scan)));
         ppu.update(80);
         assert_eq!(ppu.objects_on_scanline.len(), 1);
     }
@@ -543,8 +804,26 @@ mod tests {
         assert_eq!(ppu.mode.borrow().get_mode_number(), 3);
     }
 
-    // #[test]
-    // fn draw_transitions_to_hblank
+    #[test]
+    fn draw_transitions_to_hblank() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(Scan)));
+        ppu.update(80);
+        assert_eq!(ppu.mode.borrow().get_mode_number(), 3);
+        ppu.update(172);
+        assert_eq!(ppu.mode.borrow().get_mode_number(), 0);
+    }
+
+    #[test]
+    fn draw_does_not_transition_to_hblank_without_enough_dots() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(Draw {
+            screen_x: 0,
+            fetcher: Fetcher::new(),
+        })));
+        ppu.update(166);
+        assert_eq!(ppu.mode.borrow().get_mode_number(), 3);
+    }
 
     // Fetching background tile indices
     #[test]
@@ -633,6 +912,16 @@ mod tests {
         assert_eq!(fetcher.get_tile_index(&ppu), 0xDD);
     }
 
+    #[test]
+    fn screen_wraps_around_vertical_scy_is_greater_than_screen_height() {
+        let ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(SCY_ADDRESS, 0x98);
+        ppu.memory.borrow_mut().write(0x9800, 0x30);
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 104);
+        let mut fetcher = Fetcher::new();
+        assert_eq!(fetcher.get_tile_index(&ppu), 0x30);
+    }
+
     // Fetching window tile indices
     #[test]
     fn fetcher_gets_window_index_first_row_first_column() {
@@ -666,6 +955,7 @@ mod tests {
         ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0b10110001);
         let mut fetcher = Fetcher::new();
         fetcher.get_tile_index(&ppu);
+        fetcher.tilemap_col += 1;
         assert_eq!(fetcher.get_tile_index(&ppu), 0xBA);
     }
 
@@ -682,43 +972,201 @@ mod tests {
 
     #[test]
     fn gets_tile_data_first_row_first_byte() {
-        let ppu = get_test_ppu();
+        let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x8000, 0x11);
-        let fetcher = Fetcher::new();
-        let result = fetcher.get_tile_data(&ppu, 0, false);
+        let mut fetcher = Fetcher::new();
+        let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
         assert_eq!(result, 0x11);
     }
 
     #[test]
     fn gets_tile_data_first_row_second_byte() {
-        let ppu = get_test_ppu();
+        let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x8001, 0x11);
-        let fetcher = Fetcher::new();
-        let result = fetcher.get_tile_data(&ppu, 1, false);
+        let mut fetcher = Fetcher::new();
+        let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
         assert_eq!(result, 0x11);
     }
 
     #[test]
     fn gets_tile_data_second_row_first_byte() {
-        let ppu = get_test_ppu();
+        let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x8002, 0x11);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x01);
-        let fetcher = Fetcher::new();
-        let result = fetcher.get_tile_data(&ppu, 0, false);
+        let mut fetcher = Fetcher::new();
+        let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
         assert_eq!(result, 0x11);
     }
 
     #[test]
     fn gets_tile_data_seventh_row_second_byte() {
-        let ppu = get_test_ppu();
+        let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x800F, 0x11);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x07);
-        let fetcher = Fetcher::new();
-        let result = fetcher.get_tile_data(&ppu, 1, false);
+        let mut fetcher = Fetcher::new();
+        let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
         assert_eq!(result, 0x11);
+    }
 
-        for i in (8..0).rev() {
-            println!("{i}");
+    #[test]
+    fn gets_tile_data_seventh_row_second_byte_vertically_flipped() {
+        let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(0x8001, 0x11);
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 0x07);
+        let mut fetcher = Fetcher::new();
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 1);
+        ppu.memory.borrow_mut().write(0x9800, 0b01000000);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0);
+        let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
+        assert_eq!(result, 0x11);
+    }
+
+    #[test]
+    fn gets_tile_data_from_second_vram_bank() {
+        let mut ppu = get_test_ppu();
+        let mut fetcher = Fetcher::new();
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 0x01);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 1);
+        ppu.memory.borrow_mut().write(0x8002, 0x11);
+        ppu.memory.borrow_mut().write(0x9800, 0b00001000);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0);
+        let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
+        assert_eq!(result, 0x11);
+    }
+
+    #[test]
+    fn gets_tile_data_from_second_block_of_tiles_unsigned_addressing() {
+        let mut ppu = get_test_ppu();
+        let mut fetcher = Fetcher::new();
+        ppu.memory.borrow_mut().write(0x8300, 0x11);
+        let result = fetcher.get_tile_data(&mut ppu, 0x30, false, false);
+        assert_eq!(result, 0x11);
+    }
+
+    #[test]
+    fn get_pixels_from_tile_data_correct_ordering() {
+        let fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0xFF, 0x00);
+        for pix in pixels {
+            assert_eq!(pix, 1);
+        }
+    }
+
+    #[test]
+    fn get_pixels_from_tile_data_every_value_in_row() {
+        let fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
+        assert_eq!(pixels, [0, 2, 3, 1, 3, 1, 3, 0]);
+    }
+
+    #[test]
+    fn pushing_background_pixels_maintains_value() {
+        let ppu = &mut get_test_ppu();
+        let fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
+        let attrs = 0;
+        fetcher.push_background_pixels(ppu, pixels, attrs);
+        for (pix, known_color) in ppu
+            .background_pixel_queue
+            .iter()
+            .zip([0, 3, 1, 3, 1, 3, 2, 0])
+        {
+            assert_eq!(pix.color, known_color);
+        }
+    }
+
+    #[test]
+    fn pushing_background_pixels_maintains_value_horizontally_flipped() {
+        let ppu = &mut get_test_ppu();
+        let fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
+        let attrs = 0b00100000;
+        fetcher.push_background_pixels(ppu, pixels, attrs);
+        for (pix, known_color) in ppu
+            .background_pixel_queue
+            .iter()
+            .zip([0, 2, 3, 1, 3, 1, 3, 0])
+        {
+            assert_eq!(pix.color, known_color);
+        }
+    }
+
+    #[test]
+    fn pushing_background_pixels_go_after_current_pixels_in_queue() {
+        let mut ppu = get_test_ppu();
+        let fetcher = Fetcher::new();
+        let attrs = 0;
+        let first_pixels = VecDeque::from([3, 3, 3, 3, 3, 3, 3, 3]);
+        fetcher.push_background_pixels(&mut ppu, first_pixels, attrs);
+        let second_pixels = VecDeque::from([0, 0, 0, 0, 0, 0, 0, 0]);
+        fetcher.push_background_pixels(&mut ppu, second_pixels, attrs);
+        assert_eq!(ppu.background_pixel_queue[15].color, 0);
+        assert_eq!(ppu.background_pixel_queue[8].color, 0);
+    }
+
+    #[test]
+    fn pushing_background_pixels_go_after_current_pixels_in_queue_flipped_horizontal() {
+        let mut ppu = get_test_ppu();
+        let fetcher = Fetcher::new();
+        let attrs = 0b00100000;
+        let first_pixels = VecDeque::from([3, 3, 3, 3, 3, 3, 3, 3]);
+        fetcher.push_background_pixels(&mut ppu, first_pixels, attrs);
+        let second_pixels = VecDeque::from([0, 0, 0, 0, 0, 0, 0, 0]);
+        fetcher.push_background_pixels(&mut ppu, second_pixels, attrs);
+        assert_eq!(ppu.background_pixel_queue[15].color, 0);
+        assert_eq!(ppu.background_pixel_queue[8].color, 0);
+    }
+
+    #[test]
+    fn pushing_object_pixels_maintains_value() {
+        let ppu = &mut get_test_ppu();
+        let mut fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
+        fetcher.current_sprite = Some(0xFE00);
+        fetcher.push_object_pixels(ppu, pixels);
+        for (pix, known_color) in ppu
+            .background_pixel_queue
+            .iter()
+            .zip([0, 3, 1, 3, 1, 3, 2, 0])
+        {
+            assert_eq!(pix.color, known_color);
+        }
+    }
+
+    #[test]
+    fn pushing_object_pixels_maintains_value_horizontally_flipped() {
+        let ppu = &mut get_test_ppu();
+        let mut fetcher = Fetcher::new();
+        let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
+        fetcher.current_sprite = Some(0xFE00);
+        fetcher.push_object_pixels(ppu, pixels);
+        for (pix, known_color) in ppu
+            .background_pixel_queue
+            .iter()
+            .zip([0, 2, 3, 1, 3, 1, 3, 0])
+        {
+            assert_eq!(pix.color, known_color);
+        }
+    }
+
+    #[test]
+    fn same_object_is_not_queued_more_than_once() {
+        let mut ppu = get_test_ppu();
+        set_obj_y_pos(&mut ppu, 0, 16);
+        ppu.memory.borrow_mut().write(0xFE01, 0x08);
+        ppu.update(80); // Complete oam scan and transition to draw
+        assert_eq!(ppu.objects_on_scanline[0], 0xFE00);
+        let mut fetcher = Fetcher::new();
+        let mut draw = Draw {
+            screen_x: 0,
+            fetcher,
+        };
+        for _ in 0..12 {
+            draw.tick(&mut ppu);
+        }
+        assert_eq!(draw.fetcher.sprites_to_fetch[0], 0xFE00);
+        for i in 1..draw.fetcher.sprites_to_fetch.len() {
+            assert_ne!(draw.fetcher.sprites_to_fetch[i], 0xFE00);
         }
     }
 }
