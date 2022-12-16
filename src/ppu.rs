@@ -185,6 +185,11 @@ struct VBlank;
 impl PPUMode for VBlank {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {
         ppu.mode_dots_passed += dots;
+        // Update LY if a scanline's worth of dots have passed
+        if ppu.mode_dots_passed % (DRAW_PLUS_HBLANK_TIME + SCAN_TIME) < dots {
+            let ly = ppu.memory.borrow().read(LY_ADDRESS);
+            ppu.memory.borrow_mut().write(LY_ADDRESS, ly + 1);
+        }
         if ppu.mode_dots_passed >= V_BLANK_TIME {
             let leftover = ppu.mode_dots_passed - V_BLANK_TIME;
             self.transition(ppu);
@@ -685,6 +690,41 @@ mod tests {
         ppu.memory.borrow_mut().write(LY_ADDRESS, 143);
         ppu.update(80);
         assert_eq!(ppu.mode.borrow().get_mode_number(), 1);
+    }
+
+    #[test]
+    fn vblank_updates_ly_with_exact_dots() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
+        ppu.update(456);
+        assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
+    }
+
+    #[test]
+    fn vblank_does_not_update_ly_without_enough_dots() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
+        ppu.update(455);
+        assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial);
+    }
+
+    #[test]
+    fn vblank_updates_ly_with_extra_dots() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
+        ppu.update(800);
+        assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
+    }
+    #[test]
+    fn vblank_updates_ly_only_once_at_a_time() {
+        let mut ppu = get_test_ppu();
+        ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
+        ppu.update(1200);
+        assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
     }
 
     #[test]
