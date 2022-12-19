@@ -8,6 +8,7 @@ pub trait Memory {
 pub struct MemManager {
     memory: [u8; 0xFFFF + 1],
     vram_bank_one: [u8; 0x2000 + 1],
+    extra_ram_banks: [[u8; 0x1000 + 1]; 6],
     object_palettes: [u8; 64],
     background_palettes: [u8; 64],
 }
@@ -17,6 +18,7 @@ impl MemManager {
         MemManager {
             memory: [0; 0xFFFF + 1],
             vram_bank_one: [0; 0x2000 + 1],
+            extra_ram_banks: [[0; 0x1000 + 1]; 6],
             object_palettes: [0; 64],
             background_palettes: [0; 64],
         }
@@ -42,12 +44,17 @@ const BCPS_ADDRESS: u16 = 0xFF68;
 const BCPD_ADDRESS: u16 = 0xFF69;
 const OCPS_ADDRESS: u16 = 0xFF6A;
 const OCPD_ADDRESS: u16 = 0xFF6B;
+const SVBK_ADDRESS: u16 = 0xFF70;
 const VBK_ADDRESS: u16 = 0xFF4F;
 
 impl Memory for MemManager {
     fn read(&self, address: u16) -> u8 {
+        let ram_bank = self.memory[SVBK_ADDRESS as usize] & 0b00000111;
         let vram_bank = self.memory[VBK_ADDRESS as usize] & 0b00000001;
         match address {
+            ram_banks_address @ 0xD000..=0xDFFF if ram_bank > 1 => {
+                self.extra_ram_banks[(ram_bank - 2) as usize][(ram_banks_address - 0xD000) as usize]
+            }
             vram_address @ 0x8000..=0x9FFF if vram_bank == 1 => {
                 self.vram_bank_one[(vram_address - 0x8000) as usize]
             }
@@ -64,8 +71,13 @@ impl Memory for MemManager {
     }
 
     fn write(&mut self, address: u16, data: u8) {
+        let ram_bank = self.memory[SVBK_ADDRESS as usize] & 0b00000111;
         let vram_bank = self.memory[VBK_ADDRESS as usize] & 0b00000001;
         match address {
+            ram_banks_address @ 0xD000..=0xDFFF if ram_bank > 1 => {
+                self.extra_ram_banks[(ram_bank - 2) as usize]
+                    [(ram_banks_address - 0xD000) as usize] = data
+            }
             vram_address @ 0x8000..=0x9FFF if vram_bank == 1 => {
                 self.vram_bank_one[(vram_address - 0x8000) as usize] = data
             }
@@ -117,6 +129,31 @@ mod tests {
         let mut mem = MemManager::new();
         mem.write(DIV_ADDRESS, 0x45);
         assert_eq!(mem.read(DIV_ADDRESS), 0x00);
+    }
+
+    #[test]
+    fn ram_bank_two_is_accesible() {
+        let mut mem = MemManager::new();
+        mem.write(SVBK_ADDRESS, 0x02);
+        mem.write(0xD000, 0xAA);
+        assert_eq!(mem.read(0xD000), 0xAA);
+    }
+
+    #[test]
+    fn ram_bank_7_is_accesible() {
+        let mut mem = MemManager::new();
+        mem.write(SVBK_ADDRESS, 0x07);
+        mem.write(0xDFFF, 0xAA);
+        assert_eq!(mem.read(0xDFFF), 0xAA);
+    }
+
+    #[test]
+    fn ram_bank_two_does_not_change_bank_zero() {
+        let mut mem = MemManager::new();
+        mem.write(VBK_ADDRESS, 0x02);
+        mem.write(0xDEAD, 0xAA);
+        mem.write(VBK_ADDRESS, 0x00);
+        assert_eq!(mem.read(0xDFFF), 0x00);
     }
 
     #[test]
