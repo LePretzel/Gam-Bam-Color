@@ -82,7 +82,7 @@ impl CPU {
             changed_cycles: None,
         };
 
-        let init_inst = Rc::new(|cpu: &mut CPU| {});
+        let init_inst = Rc::new(|_cpu: &mut CPU| {});
         for _ in 0..cpu.instructions.capacity() {
             cpu.instructions
                 .push(Instruction::new(1, init_inst.clone()));
@@ -358,6 +358,14 @@ impl CPU {
         }
     }
 
+    fn add_signed_as_unsigned(left: u16, right: u8) -> u16 {
+        if (0x80 & right) >> 7 == 1 {
+            left.wrapping_sub(CPU::negate(right) as u16)
+        } else {
+            left.wrapping_add(right as u16)
+        }
+    }
+
     fn get_carry_bit(&self) -> u8 {
         return (self.register_f & 0b00010000) >> 4;
     }
@@ -506,13 +514,7 @@ impl CPU {
 
     fn jr(&mut self) {
         let displacement = self.read_operand(Immediate).unwrap() as u8;
-        let mut pc = Wrapping(self.program_counter);
-        if (0x80 & displacement) >> 7 == 1 {
-            pc -= (!displacement + 1) as u16;
-        } else {
-            pc += displacement as u16;
-        }
-        self.program_counter = pc.0;
+        self.program_counter = CPU::add_signed_as_unsigned(self.program_counter, displacement);
     }
 }
 
@@ -533,11 +535,12 @@ impl Memory for CPU {
 
     fn write(&mut self, address: u16, data: u8) {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
-        let oam_locked = mode > 1;
-        let vram_locked = mode > 2;
-        // For debugging: remove later
+        let oam_locked = false; //mode > 1; // Timing issue with these. Fix later
+        let vram_locked = false; //mode > 2;
+
+        //For debugging: remove later
         if address == 0xFF02 && data == 0x81 {
-            println!("{}", self.read(0xFF01) as char);
+            print!("{}", self.read(0xFF01) as char);
         }
         //
         match address {
@@ -546,19 +549,6 @@ impl Memory for CPU {
             0xFE00..=0xFE9F if oam_locked => (),
             _ => self.memory.borrow_mut().write(address, data),
         }
-    }
-
-    fn read_u16(&self, address: u16) -> u16 {
-        let low = self.read(address) as u16;
-        let high = self.read(address + 1) as u16;
-        (high << 8) | low
-    }
-
-    fn write_u16(&mut self, address: u16, data: u16) {
-        let low = data as u8;
-        let high = (data >> 8) as u8;
-        self.write(address, low);
-        self.write(address + 1, high);
     }
 }
 
@@ -1429,13 +1419,10 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0xE8 as usize] = Instruction::new(
         4,
         Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum += arg as u16;
-            cpu.stack_pointer = sum.0;
-            cpu.update_flags_add(cpu.program_counter as u8, arg);
+            let arg = cpu.read_operand(Immediate).unwrap();
+            cpu.update_flags_add(cpu.stack_pointer as u8, arg);
             cpu.register_f = cpu.register_f & 0b00111111;
+            cpu.stack_pointer = CPU::add_signed_as_unsigned(cpu.stack_pointer, arg);
         }),
     );
 
@@ -1443,14 +1430,12 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0xF8 as usize] = Instruction::new(
         3,
         Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let mut sum = Wrapping(cpu.stack_pointer);
-            sum += arg as u16;
-            cpu.register_h = (sum.0 >> 8) as u8;
-            cpu.register_l = sum.0 as u8;
-            cpu.update_flags_add(cpu.program_counter as u8, arg);
+            let arg = cpu.read_operand(Immediate).unwrap();
+            cpu.update_flags_add(cpu.stack_pointer as u8, arg);
             cpu.register_f = cpu.register_f & 0b00111111;
+            let sum = CPU::add_signed_as_unsigned(cpu.stack_pointer, arg);
+            cpu.register_h = (sum >> 8) as u8;
+            cpu.register_l = sum as u8;
         }),
     );
 
@@ -2804,14 +2789,14 @@ mod tests {
     fn add_sp_dd() {
         let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xE8, 0xF0]);
-        assert_eq!(cpu.stack_pointer, 0x00EE);
+        assert_eq!(cpu.stack_pointer, 0xFFEE);
     }
 
     #[test]
     fn ld_hl_sp_dd() {
         let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xF8, 0xF0]);
-        assert_eq!(CPU::combine_bytes(cpu.register_h, cpu.register_l), 0x00EE);
+        assert_eq!(CPU::combine_bytes(cpu.register_h, cpu.register_l), 0xFFEE);
         assert_eq!(cpu.stack_pointer, 0xFFFE);
     }
 
