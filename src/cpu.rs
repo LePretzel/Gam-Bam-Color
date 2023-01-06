@@ -6,7 +6,7 @@ use arrayvec::{self, ArrayVec};
 
 use crate::cpu::Operand::{Immediate, Indirect, Register};
 use crate::cpu::OperandU16::{ImmediateU16, RegisterPair};
-use crate::memory::{MemManager, Memory};
+use crate::mem_manager::{MemManager, Memory};
 
 #[derive(Clone, Copy)]
 enum Operand {
@@ -858,6 +858,10 @@ fn map_instructions(cpu: &mut CPU) {
             3,
             Rc::new(move |cpu: &mut CPU| {
                 cpu.pop(RegisterPair(dest_num));
+                // If AF is popped, reset the lower nibble of F
+                if dest_num == 3 {
+                    cpu.register_f = cpu.register_f & 0xF0;
+                }
             }),
         );
     }
