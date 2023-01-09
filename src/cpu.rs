@@ -6,7 +6,8 @@ use arrayvec::{self, ArrayVec};
 
 use crate::cpu::Operand::{Immediate, Indirect, Register};
 use crate::cpu::OperandU16::{ImmediateU16, RegisterPair};
-use crate::mem_manager::{MemManager, Memory};
+use crate::mem_manager::MemManager;
+use crate::memory::Memory;
 
 #[derive(Clone, Copy)]
 enum Operand {
@@ -1688,8 +1689,8 @@ fn map_instructions(cpu: &mut CPU) {
         cpu.instructions[i as usize] = Instruction::new(
             4,
             Rc::new(move |cpu: &mut CPU| {
+                let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                 if cpu.test_condition_code(i - 0xC2) {
-                    let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                     cpu.program_counter = dest;
                 }
             }),
@@ -1733,8 +1734,8 @@ fn map_instructions(cpu: &mut CPU) {
         cpu.instructions[i as usize] = Instruction::new(
             6,
             Rc::new(move |cpu: &mut CPU| {
+                let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                 if cpu.test_condition_code(i - 0xC4) {
-                    let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                     cpu.call(dest);
                     cpu.changed_cycles = Some(3);
                 }
