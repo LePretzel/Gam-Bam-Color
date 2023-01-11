@@ -1269,24 +1269,37 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0x27] = Instruction::new(
         1,
         Rc::new(move |cpu: &mut CPU| {
-            let low = 0b00001111 & cpu.register_a;
+            let subtraction_flag = (0b01000000 & cpu.register_a) >> 6;
             let half_carry_flag = (0b00100000 & cpu.register_f) >> 5;
-            let mut sum = Wrapping(cpu.register_a);
-            if low > 9 || half_carry_flag == 1 {
-                sum += 0x06;
-            }
-            let high = sum >> 4;
             let carry_flag = (0b00010000 & cpu.register_f) >> 4;
-            cpu.register_f = cpu.register_f & 0b11001111;
-            if high.0 > 9 || carry_flag == 1 {
-                sum += 0x60;
-                cpu.register_f = cpu.register_f | 0b00010000;
+
+            // Reset zero, half-carry, and carry flags
+            cpu.register_f = cpu.register_f & 0b01001111;
+
+            let mut sum = Wrapping(cpu.register_a);
+            if subtraction_flag == 0 {
+                // If last op was an addition
+                if carry_flag == 1 || cpu.register_a > 0x99 {
+                    sum += 0x60;
+                    // Set carry flag
+                    cpu.register_f = cpu.register_f | 0b00010000;
+                }
+                if half_carry_flag == 1 || (cpu.register_a & 0x0F) > 0x09 {
+                    sum += 0x06;
+                }
+            } else {
+                // If last op was a subtraction
+                if carry_flag == 1 {
+                    sum -= 0x60;
+                }
+                if half_carry_flag == 1 {
+                    sum -= 0x06;
+                }
             }
             cpu.register_a = sum.0;
+            // Set zero flag if needed
             if cpu.register_a == 0 {
                 cpu.register_f = cpu.register_f | 0b10000000;
-            } else {
-                cpu.register_f = cpu.register_f & 0b01111111;
             }
         }),
     );
@@ -2681,12 +2694,12 @@ mod tests {
     }
 
     #[test]
-    fn daa_overflow_to_zero() {
+    fn daa_overflow() {
         let mut cpu = CPU::new_standalone();
-        cpu.register_a = 0x9A;
+        cpu.register_a = 0xAA;
         cpu.run_test(vec![0x27]);
-        assert_eq!(cpu.register_a, 0x00);
-        assert_eq!(cpu.register_f, 0b10010000);
+        assert_eq!(cpu.register_a, 0x10);
+        assert_eq!(cpu.register_f, 0b00010000);
     }
 
     #[test]
