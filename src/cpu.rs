@@ -400,6 +400,37 @@ impl CPU {
         self.stack_pointer += 2;
     }
 
+    fn adc(&mut self, op: Operand) {
+        let source_option = self.read_operand(op);
+        if let Some(source) = source_option {
+            let carry_bit = (self.register_f & 0b00010000) >> 4;
+            let mut sum = Wrapping(self.register_a);
+            self.update_flags_add(sum.0, source);
+            let overflow_bits = self.register_f & 0b00110000;
+            sum += source;
+            self.update_flags_add(sum.0, carry_bit);
+            sum += carry_bit;
+            self.register_a = sum.0;
+            self.register_f = self.register_f | overflow_bits;
+        }
+    }
+
+    fn sbc(&mut self, op: Operand) {
+        let source_option = self.read_operand(op);
+        if let Some(source) = source_option {
+            let source = CPU::negate(source);
+            let carry_bit = (self.register_f & 0b00010000) >> 4;
+            let mut sum = Wrapping(self.register_a);
+            self.update_flags_sub(sum.0, source);
+            let overflow_bits = self.register_f & 0b00110000;
+            sum += source;
+            self.update_flags_sub(sum.0, CPU::negate(carry_bit));
+            sum -= carry_bit;
+            self.register_a = sum.0;
+            self.register_f = self.register_f | overflow_bits;
+        }
+    }
+
     fn rlc(&mut self, op: Operand) {
         let source_option = self.read_operand(op);
         if let Some(source) = source_option {
@@ -514,7 +545,7 @@ impl CPU {
     }
 
     fn jr(&mut self) {
-        let displacement = self.read_operand(Immediate).unwrap() as u8;
+        let displacement = self.read_operand(Immediate).unwrap();
         self.program_counter = CPU::add_signed_as_unsigned(self.program_counter, displacement);
     }
 }
@@ -920,47 +951,18 @@ fn map_instructions(cpu: &mut CPU) {
 
         cpu.instructions[opcode as usize] = Instruction::new(
             1,
-            Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = *reg;
-                    let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-                    cpu.update_flags_add(cpu.register_a, reg_value + carry_bit);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    sum += carry_bit;
-                    cpu.register_a = sum.0;
-                }
-            }),
+            Rc::new(move |cpu: &mut CPU| cpu.adc(Register(register_num))),
         );
     }
 
     // ADC A, n  (2 M-cycles)
-    cpu.instructions[0xCE] = Instruction::new(
-        2,
-        Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(cpu.program_counter);
-            cpu.program_counter += 1;
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum += carry_bit;
-            cpu.register_a = sum.0;
-        }),
-    );
+    cpu.instructions[0xCE] = Instruction::new(2, Rc::new(move |cpu: &mut CPU| cpu.adc(Immediate)));
 
     // ADC A, (HL)  (2 M-cycles)
     cpu.instructions[0x8E] = Instruction::new(
         2,
         Rc::new(move |cpu: &mut CPU| {
-            let arg = cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_add(cpu.register_a, arg + carry_bit);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum += carry_bit;
-            cpu.register_a = sum.0;
+            cpu.adc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)))
         }),
     );
 
@@ -1016,18 +1018,7 @@ fn map_instructions(cpu: &mut CPU) {
 
         cpu.instructions[opcode as usize] = Instruction::new(
             1,
-            Rc::new(move |cpu: &mut CPU| {
-                let register_option = cpu.get_register(register_num);
-                if let Some(reg) = register_option {
-                    let reg_value = CPU::negate(*reg);
-                    let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-                    cpu.update_flags_sub(cpu.register_a, reg_value);
-                    let mut sum = Wrapping(reg_value);
-                    sum += cpu.register_a;
-                    sum -= carry_bit;
-                    cpu.register_a = sum.0;
-                }
-            }),
+            Rc::new(move |cpu: &mut CPU| cpu.sbc(Register(register_num))),
         );
     }
 
@@ -1035,14 +1026,7 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0xDE] = Instruction::new(
         2,
         Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(cpu.program_counter));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.program_counter += 1;
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum -= carry_bit;
-            cpu.register_a = sum.0;
+            cpu.sbc(Immediate);
         }),
     );
 
@@ -1050,13 +1034,7 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0x9E] = Instruction::new(
         2,
         Rc::new(move |cpu: &mut CPU| {
-            let arg = CPU::negate(cpu.read(CPU::combine_bytes(cpu.register_h, cpu.register_l)));
-            let carry_bit = (cpu.register_f & 0b00010000) >> 4;
-            cpu.update_flags_sub(cpu.register_a, arg);
-            let mut sum = Wrapping(cpu.register_a);
-            sum += arg;
-            sum -= carry_bit;
-            cpu.register_a = sum.0;
+            cpu.sbc(Indirect(CPU::combine_bytes(cpu.register_h, cpu.register_l)))
         }),
     );
 
