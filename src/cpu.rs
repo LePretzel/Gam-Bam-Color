@@ -518,7 +518,8 @@ impl CPU {
         if let Some(source) = source_option {
             let mask = 1 << bit_num;
             let test_bit = (source & mask) >> bit_num;
-            self.register_f = self.register_f & 0b00011111 | 0b00100000 | test_bit << 7;
+            let zero_bit = if test_bit == 1 { 0 } else { 1 };
+            self.register_f = (self.register_f & 0b00011111) | 0b00100000 | zero_bit << 7;
         }
     }
 
@@ -2984,7 +2985,7 @@ mod tests {
     fn bit_0_b_is_zero() {
         let mut cpu = CPU::new_standalone();
         cpu.run_test(vec![0xCB, 0x40]);
-        assert_eq!(cpu.register_f, 0b00100000);
+        assert_eq!(cpu.register_f, 0b10100000);
     }
 
     #[test]
@@ -2992,7 +2993,7 @@ mod tests {
         let mut cpu = CPU::new_standalone();
         cpu.register_b = 0b10000000;
         cpu.run_test(vec![0xCB, 0x78]);
-        assert_eq!(cpu.register_f, 0b10100000);
+        assert_eq!(cpu.register_f, 0b00100000);
     }
 
     #[test]
@@ -3001,7 +3002,7 @@ mod tests {
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b00100000);
         cpu.run_test(vec![0xCB, 0x6E]);
-        assert_eq!(cpu.register_f, 0b10100000);
+        assert_eq!(cpu.register_f, 0b00100000);
     }
 
     #[test]
@@ -3010,7 +3011,7 @@ mod tests {
         let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
         cpu.write(hl, 0b00100000);
         cpu.run_test(vec![0xCB, 0x66]);
-        assert_eq!(cpu.register_f, 0b00100000);
+        assert_eq!(cpu.register_f, 0b10100000);
     }
 
     #[test]
