@@ -1298,12 +1298,12 @@ fn map_instructions(cpu: &mut CPU) {
     cpu.instructions[0x27] = Instruction::new(
         1,
         Rc::new(move |cpu: &mut CPU| {
-            let subtraction_flag = (0b01000000 & cpu.register_a) >> 6;
+            let subtraction_flag = (0b01000000 & cpu.register_f) >> 6;
             let half_carry_flag = (0b00100000 & cpu.register_f) >> 5;
             let carry_flag = (0b00010000 & cpu.register_f) >> 4;
 
-            // Reset zero, half-carry, and carry flags
-            cpu.register_f = cpu.register_f & 0b01001111;
+            // Reset zero and carry flags
+            cpu.register_f = cpu.register_f & 0b01011111;
 
             let mut sum = Wrapping(cpu.register_a);
             if subtraction_flag == 0 {
