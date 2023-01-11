@@ -696,7 +696,7 @@ fn map_instructions(cpu: &mut CPU) {
         2,
         Rc::new(|cpu: &mut CPU| {
             cpu.write(
-                CPU::combine_bytes(cpu.register_b, cpu.register_b),
+                CPU::combine_bytes(cpu.register_b, cpu.register_c),
                 cpu.register_a,
             );
         }),
