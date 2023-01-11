@@ -436,7 +436,11 @@ impl CPU {
         if let Some(source) = source_option {
             let bit_seven = (source & 0b10000000) >> 7;
             self.write_operand(op, source << 1 | bit_seven);
-            let is_zero = if source == 0 { 1 } else { 0 };
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
@@ -446,7 +450,11 @@ impl CPU {
         if let Some(source) = source_option {
             let bit_seven = (source & 0b10000000) >> 7;
             self.write_operand(op, source << 1 | carry_bit);
-            let is_zero = if source == 0 { 1 } else { 0 };
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
             self.register_f = (self.register_f & 0b00000000) | bit_seven << 4 | is_zero << 7;
         }
     }
@@ -456,7 +464,11 @@ impl CPU {
         if let Some(source) = source_option {
             let bit_zero = source & 0b00000001;
             self.write_operand(op, source >> 1 | bit_zero << 7);
-            let is_zero = if source == 0 { 1 } else { 0 };
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
@@ -466,7 +478,11 @@ impl CPU {
         if let Some(source) = source_option {
             let bit_zero = source & 0b00000001;
             self.write_operand(op, source >> 1 | carry_bit << 7);
-            let is_zero = if source == 0 { 1 } else { 0 };
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
             self.register_f = (self.register_f & 0b00000000) | bit_zero << 4 | is_zero << 7;
         }
     }
@@ -476,8 +492,12 @@ impl CPU {
         if let Some(source) = source_option {
             let carry_bit = (source & 0b10000000) >> 7;
             self.write_operand(op, source << 1);
-            let zero_bit = if source == 0 { 1 } else { 0 };
-            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
+            self.register_f = 0b00000000 | carry_bit << 4 | is_zero << 7;
         }
     }
 
@@ -487,8 +507,12 @@ impl CPU {
             let bit_seven = source & 0b10000000;
             let carry_bit = source & 0b00000001;
             self.write_operand(op, (source >> 1) | bit_seven);
-            let zero_bit = if source == 0 { 1 } else { 0 };
-            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
+            self.register_f = 0b00000000 | carry_bit << 4 | is_zero << 7;
         }
     }
 
@@ -497,8 +521,12 @@ impl CPU {
         if let Some(source) = source_option {
             let carry_bit = source & 0b00000001;
             self.write_operand(op, source >> 1);
-            let zero_bit = if source == 0 { 1 } else { 0 };
-            self.register_f = 0b00000000 | carry_bit << 4 | zero_bit << 7;
+            let is_zero = if self.read_operand(op).unwrap() == 0 {
+                1
+            } else {
+                0
+            };
+            self.register_f = 0b00000000 | carry_bit << 4 | is_zero << 7;
         }
     }
 
