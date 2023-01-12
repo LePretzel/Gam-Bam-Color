@@ -104,14 +104,14 @@ impl CPU {
             self.program_counter += 1;
             let inst = self.instructions[opcode as usize].inst.clone();
             inst(self);
-            if let Some(num) = self.changed_cycles {
-                self.instructions[opcode as usize].cycles = num;
+            if let Some(new_cycles) = self.changed_cycles {
+                cycles = new_cycles as u32;
                 self.changed_cycles = None;
+            } else {
+                cycles = self.instructions[opcode as usize].cycles as u32;
             }
-            cycles = self.instructions[opcode as usize].cycles as u32;
         }
         cycles += self.handle_interrupts();
-
         // Returns base clocks instead of m-cycles
         cycles * 4
     }
@@ -583,8 +583,8 @@ const STAT_ADDRESS: u16 = 0xFF41;
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
-        let oam_locked = mode > 1;
-        let vram_locked = mode > 2;
+        let oam_locked = false; //mode > 1; // Timing issue with these. Fix later
+        let vram_locked = false; // mode > 2;
         let locked_read_value = 0xFF;
         match address {
             0x8000..=0x9FFF if vram_locked => locked_read_value,
