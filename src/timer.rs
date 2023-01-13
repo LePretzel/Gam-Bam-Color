@@ -36,9 +36,12 @@ impl Timer {
 
     pub fn update(&mut self, cycles: u32) {
         self.available_cycles_div += cycles;
-        self.available_cycles_tima += cycles;
         self.update_div();
-        self.update_tima();
+        let tac = self.memory.borrow().read(TAC_ADDRESS);
+        if tac & 0b00000100 != 0 {
+            self.available_cycles_tima += cycles;
+            self.update_tima();
+        };
     }
 
     fn update_div(&mut self) {
@@ -62,10 +65,6 @@ impl Timer {
     }
 
     fn update_tima(&mut self) {
-        let tac = self.memory.borrow().read(TAC_ADDRESS);
-        if tac & 0b00000100 == 0 {
-            return;
-        };
         let tima_speed = BASE_SPEED * self.get_tima_speed();
         while self.available_cycles_tima >= tima_speed {
             if self.memory.borrow().read(TIMA_ADDRESS) == 0xFF {
@@ -74,9 +73,9 @@ impl Timer {
             }
             self.increment(TIMA_ADDRESS);
             self.available_cycles_tima -= tima_speed;
-            self.send_interrupt_if_ready(self.available_cycles_tima);
-            self.set_to_tma_if_ready(self.available_cycles_tima);
         }
+        self.send_interrupt_if_ready(self.available_cycles_tima);
+        self.set_to_tma_if_ready(self.available_cycles_tima);
     }
 
     fn increment(&mut self, address: u16) {
@@ -100,7 +99,7 @@ impl Timer {
         if self.set_to_tma_ready && remaining_cycles >= 4 {
             let tma = self.memory.borrow().read(TMA_ADDRESS);
             self.memory.borrow_mut().write(TIMA_ADDRESS, tma);
-            self.interrupt_ready = false;
+            self.set_to_tma_ready = false;
         }
     }
 }
@@ -194,7 +193,7 @@ mod tests {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(8);
+        tim.update(20);
         let interrupt = (tim.memory.borrow().read(0xFF0F) & 0b00000100) >> 2;
         assert_eq!(interrupt, 1);
     }
@@ -203,7 +202,7 @@ mod tests {
     fn does_not_send_interrupt_if_timer_does_not_overflow() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(4);
+        tim.update(32);
         let interrupt = (tim.memory.borrow().read(0xFF0F) & 0b00000100) >> 2;
         assert_eq!(interrupt, 0);
     }
@@ -213,7 +212,7 @@ mod tests {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(7);
+        tim.update(16);
         let interrupt = (tim.memory.borrow().read(0xFF0F) & 0b00000100) >> 2;
         assert_eq!(interrupt, 0);
     }
@@ -227,7 +226,7 @@ mod tests {
         tim.memory.borrow_mut().write(if_address, 0);
         tim.update(2000);
         assert_ne!(tim.memory.borrow().read(if_address), 0x04);
-        tim.update(4000);
+        tim.update(4004);
         assert_eq!(tim.memory.borrow().read(if_address), 0x04);
     }
 }
