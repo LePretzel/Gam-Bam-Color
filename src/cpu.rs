@@ -1712,6 +1712,8 @@ fn map_instructions(cpu: &mut CPU) {
                 let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                 if cpu.test_condition_code(i - 0xC2) {
                     cpu.program_counter = dest;
+                } else {
+                    cpu.changed_cycles = Some(3);
                 }
             }),
         );
@@ -1732,9 +1734,9 @@ fn map_instructions(cpu: &mut CPU) {
             Rc::new(move |cpu: &mut CPU| {
                 if cpu.test_condition_code(i - 0x20) {
                     cpu.jr();
-                    cpu.changed_cycles = Some(2);
                 } else {
                     cpu.program_counter += 1;
+                    cpu.changed_cycles = Some(2);
                 }
             }),
         );
@@ -1757,6 +1759,7 @@ fn map_instructions(cpu: &mut CPU) {
                 let dest = cpu.read_operand_u16(ImmediateU16).unwrap();
                 if cpu.test_condition_code(i - 0xC4) {
                     cpu.call(dest);
+                } else {
                     cpu.changed_cycles = Some(3);
                 }
             }),
@@ -1780,6 +1783,7 @@ fn map_instructions(cpu: &mut CPU) {
                 if cpu.test_condition_code(i - 0xC0) {
                     cpu.program_counter = cpu.read_u16(cpu.stack_pointer);
                     cpu.stack_pointer += 2;
+                } else {
                     cpu.changed_cycles = Some(2);
                 }
             }),
