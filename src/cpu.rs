@@ -1593,11 +1593,13 @@ fn map_instructions(cpu: &mut CPU) {
                     let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
                     match arg_low_nibble {
                         // BIT n, r  (2 M-cycles)
-                        6 | 0xE => cpu.bit(bit_num, Indirect(hl)),
+                        6 | 0xE => {
+                            cpu.bit(bit_num, Indirect(hl));
+                            cpu.changed_cycles = Some(3);
+                        }
                         // BIT n, (hl)  (3 M-cycles)
                         _ => {
                             cpu.bit(bit_num, Register(reg_num));
-                            cpu.changed_cycles = Some(3);
                         }
                     }
                 }
@@ -1607,11 +1609,13 @@ fn map_instructions(cpu: &mut CPU) {
                     let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
                     match arg_low_nibble {
                         // RES n, r  (2 M-cycles)
-                        6 | 0xE => cpu.res(bit_num, Indirect(hl)),
+                        6 | 0xE => {
+                            cpu.res(bit_num, Indirect(hl));
+                            cpu.changed_cycles = Some(4);
+                        }
                         // RES n, (hl)  (4 M-cycles)
                         _ => {
                             cpu.res(bit_num, Register(reg_num));
-                            cpu.changed_cycles = Some(4);
                         }
                     }
                 }
@@ -1621,12 +1625,12 @@ fn map_instructions(cpu: &mut CPU) {
                     let hl = CPU::combine_bytes(cpu.register_h, cpu.register_l);
                     match arg_low_nibble {
                         // SET n, r  (2 M-cycles)
-                        6 | 0xE => cpu.set(bit_num, Indirect(hl)),
-                        // SET n, (hl)  (4 M-cycles)
-                        _ => {
-                            cpu.set(bit_num, Register(reg_num));
+                        6 | 0xE => {
+                            cpu.set(bit_num, Indirect(hl));
                             cpu.changed_cycles = Some(4);
                         }
+                        // SET n, (hl)  (4 M-cycles)
+                        _ => cpu.set(bit_num, Register(reg_num)),
                     }
                 }
                 _ => {}
