@@ -5,7 +5,10 @@ use std::rc::Rc;
 use sdl2::pixels::PixelFormatEnum;
 
 use crate::cpu::CPU;
-use crate::memory::{MemManager, Memory};
+use crate::mbc::mbc1::MBC1;
+use crate::mbc::MBC;
+use crate::mem_manager::MemManager;
+use crate::memory::Memory;
 use crate::ppu::PPU;
 use crate::timer::Timer;
 
@@ -34,14 +37,48 @@ impl Emulator {
     }
 
     pub fn load_rom(&mut self, rom_path: &str) -> std::io::Result<()> {
-        const ROM_LIMIT: u16 = 0x8000;
         let program = fs::read(rom_path)?;
-        for i in 0..program.len() {
-            if i >= ROM_LIMIT as usize {
-                break;
-            }
+        // Preload cartridge header to to get data for setup
+        let header_range = 0..0x014F;
+        for i in header_range {
             self.memory.borrow_mut().write(i as u16, program[i]);
         }
+
+        // MBC setup
+        let rom_banks = self.get_number_of_rom_banks();
+        let ram_banks = self.get_number_of_ram_banks();
+        let mut mbc = self.get_mbc(rom_banks, ram_banks);
+
+        // Load rom into memory
+        let rom_bank_size: usize = 0x4000;
+        if let Some(ref mut mbc) = mbc {
+            let rom_select_address = 0x2000;
+            for i in 0..rom_banks {
+                mbc.write(rom_select_address, i);
+                // Figure out whether the data should be written to first or second area of rom
+                let bank_offset = if i == 0 || i == 0x20 || i == 0x40 || i == 0x60 {
+                    0
+                } else {
+                    0x4000
+                };
+                for j in 0..rom_bank_size {
+                    mbc.init_write(
+                        bank_offset + j as u16,
+                        program[rom_bank_size * i as usize + j],
+                    )
+                }
+            }
+
+            // Set rom select register back to initial value of zero
+            mbc.write(rom_select_address, 0);
+        } else {
+            for i in 0..rom_bank_size * 2 {
+                self.memory
+                    .borrow_mut()
+                    .write(i as u16, program[i as usize]);
+            }
+        }
+        self.memory.borrow_mut().set_mbc(mbc);
         Ok(())
     }
 
@@ -67,8 +104,13 @@ impl Emulator {
             .unwrap();
 
         let mut dots = 0;
+        let mut poll_timer = 0;
         loop {
-            for e in event_pump.poll_iter() {}
+            poll_timer += 1;
+            if poll_timer == 1000 {
+                poll_timer -= 1000;
+                for e in event_pump.poll_iter() {}
+            }
             if dots >= DOTS_PER_FRAME {
                 dots -= DOTS_PER_FRAME;
                 // Todo: sleep until time for frame to be displayed
@@ -91,6 +133,31 @@ impl Emulator {
         let status = self.load_rom(rom_path);
         if let Ok(_) = status {
             self.run();
+        }
+    }
+
+    fn get_number_of_rom_banks(&self) -> u8 {
+        2 << self.memory.borrow().read(0x0148)
+    }
+
+    fn get_number_of_ram_banks(&self) -> u8 {
+        let header_value = self.memory.borrow().read(0x0149);
+        match header_value {
+            0 => 0,
+            2 => 1,
+            3 => 4,
+            4 => 16,
+            5 => 8,
+            _ => 0,
+        }
+    }
+
+    fn get_mbc(&self, rom_banks: u8, ram_banks: u8) -> Option<Box<dyn MBC>> {
+        let header_value = self.memory.borrow().read(0x0147);
+        match header_value {
+            0 => None,
+            1..=3 => Some(Box::new(MBC1::new(rom_banks, ram_banks))),
+            _ => None,
         }
     }
 }

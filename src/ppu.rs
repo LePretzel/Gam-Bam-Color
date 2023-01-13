@@ -1,6 +1,7 @@
 use std::{cell::RefCell, collections::VecDeque, rc::Rc};
 
-use crate::memory::{MemManager, Memory};
+use crate::mem_manager::MemManager;
+use crate::memory::Memory;
 use crate::ppu::FetcherStage::{DataHigh, DataLow, GetTile, Push};
 
 const IF_ADDRESS: u16 = 0xFF0F;
