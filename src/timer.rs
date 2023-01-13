@@ -1,8 +1,9 @@
 use std::{cell::RefCell, num::Wrapping, rc::Rc};
 
-use crate::memory::{MemManager, Memory};
+use crate::mem_manager::MemManager;
+use crate::memory::Memory;
 
-const BASE_SPEED: u32 = 4;
+const BASE_SPEED: u32 = 16;
 const DIV_ADDRESS: u16 = 0xFF04;
 const TIMA_ADDRESS: u16 = 0xFF05;
 const TMA_ADDRESS: u16 = 0xFF06;
@@ -41,7 +42,7 @@ impl Timer {
     }
 
     fn update_div(&mut self) {
-        let div_speed = BASE_SPEED * 4;
+        let div_speed = BASE_SPEED * 16;
         while self.available_cycles_div >= div_speed {
             self.increment(DIV_ADDRESS);
             self.available_cycles_div -= div_speed;
@@ -123,32 +124,32 @@ mod tests {
     fn update_tima_base_speed_and_div_both_increment() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(16);
-        assert_eq!(read_div_and_tima(tim), (0x01, 0x04));
+        tim.update(16 * 16);
+        assert_eq!(read_div_and_tima(tim), (0x01, 0x10));
     }
 
     #[test]
     fn update_tima_base_speed_and_div_both_increment_remaining_cycles() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(19);
-        assert_eq!(read_div_and_tima(tim), (0x01, 0x04));
+        tim.update(16 * 16 + 3);
+        assert_eq!(read_div_and_tima(tim), (0x01, 0x10));
     }
 
     #[test]
     fn update_tima_continues_with_remaining_cycles() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
-        tim.update(19);
-        tim.update(1);
-        assert_eq!(read_div_and_tima(tim), (0x01, 0x05));
+        tim.update(16 * 16);
+        tim.update(16);
+        assert_eq!(read_div_and_tima(tim), (0x01, 0x11));
     }
 
     #[test]
     fn update_tima_slowest_speed_div_increments() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
-        tim.update(16);
+        tim.update(16 * 16);
         assert_eq!(read_div_and_tima(tim), (0x01, 0x00));
     }
 
@@ -156,35 +157,35 @@ mod tests {
     fn update_tima_slowest_speed_both_increment() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
-        tim.update(256);
-        assert_eq!(read_div_and_tima(tim), (0x10, 0x01));
+        tim.update(16 * 64);
+        assert_eq!(read_div_and_tima(tim), (0x04, 0x01));
     }
 
     #[test]
     fn tima_does_not_get_set_to_tma_if_not_enough_cycles_for_delay() {
         let mut tim = get_test_timer();
-        tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
+        tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
         tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
         tim.memory.borrow_mut().write(TMA_ADDRESS, 0x72);
-        tim.update(256);
-        assert_eq!(read_div_and_tima(tim), (0x10, 0x00));
+        tim.update(16);
+        assert_eq!(read_div_and_tima(tim), (0x00, 0x00));
     }
 
     #[test]
     fn tima_gets_set_to_tma_after_delay() {
         let mut tim = get_test_timer();
-        tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000100);
+        tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000101);
         tim.memory.borrow_mut().write(TIMA_ADDRESS, 0xFF);
         tim.memory.borrow_mut().write(TMA_ADDRESS, 0x72);
-        tim.update(260);
-        assert_eq!(read_div_and_tima(tim), (0x10, 0x72));
+        tim.update(20);
+        assert_eq!(read_div_and_tima(tim), (0x00, 0x72));
     }
 
     #[test]
     fn tima_does_not_increment_if_timer_disabled() {
         let mut tim = get_test_timer();
         tim.memory.borrow_mut().write(TAC_ADDRESS, 0b00000001);
-        tim.update(16);
+        tim.update(16 * 16);
         assert_eq!(read_div_and_tima(tim), (0x01, 0x00));
     }
 
@@ -215,5 +216,18 @@ mod tests {
         tim.update(7);
         let interrupt = (tim.memory.borrow().read(0xFF0F) & 0b00000100) >> 2;
         assert_eq!(interrupt, 0);
+    }
+
+    #[test]
+    fn interrupt_test_example() {
+        let mut tim = get_test_timer();
+        tim.memory.borrow_mut().write(TAC_ADDRESS, 0x05);
+        tim.memory.borrow_mut().write(TIMA_ADDRESS, 0);
+        let if_address = 0xFF0F;
+        tim.memory.borrow_mut().write(if_address, 0);
+        tim.update(2000);
+        assert_ne!(tim.memory.borrow().read(if_address), 0x04);
+        tim.update(4000);
+        assert_eq!(tim.memory.borrow().read(if_address), 0x04);
     }
 }
