@@ -41,6 +41,7 @@ impl MemManager {
     }
 }
 
+const JOYP_ADDRESS: u16 = 0xFF00;
 const DIV_ADDRESS: u16 = 0xFF04;
 const BCPS_ADDRESS: u16 = 0xFF68;
 const BCPD_ADDRESS: u16 = 0xFF69;
@@ -54,6 +55,7 @@ impl Memory for MemManager {
         let ram_bank = self.memory[SVBK_ADDRESS as usize] & 0b00000111;
         let vram_bank = self.memory[VBK_ADDRESS as usize] & 0b00000001;
         match address {
+            JOYP_ADDRESS => 0xFF, // Delete this
             rom_address @ 0x0000..=0x7FFF if self.mbc.is_some() => {
                 self.mbc.as_ref().unwrap().read(rom_address)
             }

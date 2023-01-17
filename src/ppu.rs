@@ -22,6 +22,12 @@ const OCPS_ADDRESS: u16 = 0xFF6A;
 const OCPD_ADDRESS: u16 = 0xFF68;
 const VBK_ADDRESS: u16 = 0xFF4F;
 
+const V_BLANK_TIME: u32 = 4560;
+const SCAN_TIME: u32 = 80;
+const DRAW_PLUS_HBLANK_TIME: u32 = 376;
+const DOTS_PER_FRAME: u32 = 70224;
+const DOTS_PER_SCANLINE: u32 = 456;
+
 #[derive(Clone, Copy)]
 struct ObjectPixel {
     color: u8,
@@ -55,6 +61,13 @@ pub struct PPU {
 
 impl PPU {
     pub fn new(memory: Rc<RefCell<MemManager>>) -> Self {
+        let mut ppu = PPU::new_test(memory);
+        // Needed because emulator starts at pc = 0x0100 instead of actual hardware that starts at pc = 0x0000
+        ppu.update(DOTS_PER_SCANLINE * 147 + 180);
+        ppu
+    }
+
+    fn new_test(memory: Rc<RefCell<MemManager>>) -> Self {
         let initial_mode = Rc::new(RefCell::new(Scan));
         let mut ppu = PPU {
             mode: initial_mode.clone(),
@@ -178,18 +191,16 @@ impl PPUMode for HBlank {
     }
 }
 
-const V_BLANK_TIME: u32 = 4560;
-const SCAN_TIME: u32 = 80;
-const DRAW_PLUS_HBLANK_TIME: u32 = 376;
-
 struct VBlank;
 impl PPUMode for VBlank {
     fn update(&mut self, ppu: &mut PPU, dots: u32) {
         ppu.mode_dots_passed += dots;
         // Update LY if a scanline's worth of dots have passed
-        if ppu.mode_dots_passed % (DRAW_PLUS_HBLANK_TIME + SCAN_TIME) < dots {
+        if ppu.mode_dots_passed % DOTS_PER_SCANLINE < dots {
             let ly = ppu.memory.borrow().read(LY_ADDRESS);
-            ppu.memory.borrow_mut().write(LY_ADDRESS, ly + 1);
+            ppu.memory
+                .borrow_mut()
+                .write(LY_ADDRESS, 143 + (ppu.mode_dots_passed / 456) as u8);
         }
         if ppu.mode_dots_passed >= V_BLANK_TIME {
             let leftover = ppu.mode_dots_passed - V_BLANK_TIME;
@@ -429,7 +440,7 @@ impl Fetcher {
         let signed_addressing = !is_object && lcdc & 0b00010000 == 0;
         let base_address = if signed_addressing {
             let signed_index: i32 = if index > 127 {
-                -((index as i32) - 127)
+                -(128 - (index as i32 - 128))
             } else {
                 index as i32
             };
@@ -650,7 +661,7 @@ mod tests {
 
     fn get_test_ppu() -> PPU {
         let mem = Rc::new(RefCell::new(MemManager::new()));
-        PPU::new(mem.clone())
+        PPU::new_test(mem.clone())
     }
 
     fn set_obj_y_pos(ppu: &mut PPU, obj_index: u8, scanline: u8) {
