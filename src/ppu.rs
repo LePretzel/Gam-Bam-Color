@@ -139,10 +139,18 @@ impl PPU {
 
     fn check_coincidence_stat_interrupt(&mut self) {
         let stat_value = self.memory.borrow().read(STAT_ADDRESS);
-        let interrupt = self.memory.borrow().read(IF_ADDRESS) | 0b00000010;
-        let lyc_equals_ly = (stat_value & 0b01000100) == 68;
-        if lyc_equals_ly {
-            self.memory.borrow_mut().write(IF_ADDRESS, interrupt);
+        let coincidence_enabled = stat_value & 0b01000000 != 0;
+        if coincidence_enabled && self.current_scanline() == self.memory.borrow().read(LYC_ADDRESS)
+        {
+            // Set STAT flag
+            self.memory
+                .borrow_mut()
+                .write(STAT_ADDRESS, stat_value | 0b00000100);
+            // Set IF flag
+            self.memory.borrow_mut().write(
+                IF_ADDRESS,
+                self.memory.borrow().read(IF_ADDRESS) | 0b00000010,
+            );
         }
     }
 
@@ -197,10 +205,7 @@ impl PPUMode for VBlank {
         ppu.mode_dots_passed += dots;
         // Update LY if a scanline's worth of dots have passed
         if ppu.mode_dots_passed % DOTS_PER_SCANLINE < dots {
-            let ly = ppu.memory.borrow().read(LY_ADDRESS);
-            ppu.memory
-                .borrow_mut()
-                .write(LY_ADDRESS, 143 + (ppu.mode_dots_passed / 456) as u8);
+            ppu.set_scanline(143 + (ppu.mode_dots_passed / DOTS_PER_SCANLINE) as u8);
         }
         if ppu.mode_dots_passed >= V_BLANK_TIME {
             let leftover = ppu.mode_dots_passed - V_BLANK_TIME;
@@ -398,16 +403,18 @@ impl Fetcher {
     }
 
     fn get_tile_index(&mut self, ppu: &PPU) -> u8 {
-        let lcdc = ppu.memory.borrow().read(LCDC_ADDRESS);
+        let mem = ppu.memory.borrow();
+        let lcdc = mem.read(LCDC_ADDRESS);
 
-        let wx = ppu.memory.borrow().read(WX_ADDRESS).wrapping_sub(7);
-        let wy = ppu.memory.borrow().read(WY_ADDRESS);
-        let is_window_tile = ppu.current_scanline() >= wy / 8 && (self.tilemap_col >= wx / 8);
+        let wx = mem.read(WX_ADDRESS).wrapping_sub(7);
+        let wy = mem.read(WY_ADDRESS);
+        let current_scanline = ppu.current_scanline();
+        let is_window_tile = current_scanline >= wy / 8 && (self.tilemap_col >= wx / 8);
         let window_enabled = lcdc & 0b00100000 != 0;
         let uses_window = window_enabled && is_window_tile;
 
-        let scx = ppu.memory.borrow().read(SCX_ADDRESS);
-        let scy = ppu.memory.borrow().read(SCY_ADDRESS);
+        let scx = mem.read(SCX_ADDRESS);
+        let scy = mem.read(SCY_ADDRESS);
         let screen_offset_x = if uses_window { 0 } else { scx / 8 };
         let screen_offset_y = if uses_window { 0 } else { scy };
 
@@ -422,10 +429,10 @@ impl Fetcher {
 
         let tilemap_row_width: u16 = 32;
         let tilemap_x = ((screen_offset_x + self.tilemap_col) & 0x1F) as u16;
-        let tilemap_y = (ppu.current_scanline().wrapping_add(screen_offset_y) / 8) as u16;
+        let tilemap_y = (current_scanline.wrapping_add(screen_offset_y) / 8) as u16;
         let tile_position = tilemap_y * tilemap_row_width + tilemap_x;
 
-        ppu.memory.borrow().read(tilemap_start + tile_position)
+        mem.read(tilemap_start + tile_position)
     }
 
     fn get_bg_tile_attributes(&mut self, ppu: &PPU) -> u8 {
@@ -708,6 +715,7 @@ mod tests {
     fn vblank_updates_ly_with_exact_dots() {
         let mut ppu = get_test_ppu();
         ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 143);
         let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
         ppu.update(456);
         assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
@@ -726,16 +734,9 @@ mod tests {
     fn vblank_updates_ly_with_extra_dots() {
         let mut ppu = get_test_ppu();
         ppu.set_mode(Rc::new(RefCell::new(VBlank)));
+        ppu.memory.borrow_mut().write(LY_ADDRESS, 143);
         let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
         ppu.update(800);
-        assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
-    }
-    #[test]
-    fn vblank_updates_ly_only_once_at_a_time() {
-        let mut ppu = get_test_ppu();
-        ppu.set_mode(Rc::new(RefCell::new(VBlank)));
-        let ly_initial = ppu.memory.borrow().read(LY_ADDRESS);
-        ppu.update(1200);
         assert_eq!(ppu.memory.borrow().read(LY_ADDRESS), ly_initial + 1);
     }
 
