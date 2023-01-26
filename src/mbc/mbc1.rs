@@ -96,6 +96,12 @@ impl Memory for MBC1 {
                     self.using_ram_banking = false;
                 }
             }
+            external_ram_address @ 0xA000..=0xBFFF
+                if self.ram_enabled && self.using_ram_banking =>
+            {
+                self.ram[self.ram_bank_index as usize][(external_ram_address - 0xA000) as usize] =
+                    data;
+            }
             _ => (),
         }
     }
