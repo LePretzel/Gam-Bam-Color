@@ -296,6 +296,8 @@ struct Fetcher {
     dots_since_fetch_start: u32,
     stage: FetcherStage,
     tile_index: Option<u8>,
+    tile_address: Option<u16>, // Can delete later
+    bg_tile_attributes: Option<u8>,
     tile_data_low: Option<u8>,
     tile_data_high: Option<u8>,
     current_sprite: Option<u16>,
@@ -311,6 +313,8 @@ impl Fetcher {
             dots_since_fetch_start: 0,
             stage: GetTile,
             tile_index: None,
+            tile_address: None,
+            bg_tile_attributes: None,
             tile_data_low: None,
             tile_data_high: None,
             current_sprite: None,
@@ -333,12 +337,17 @@ impl Fetcher {
         match self.stage {
             GetTile => {
                 if current_dots == 2 {
-                    self.tile_index = match self.is_fetching_object {
+                    match self.is_fetching_object {
                         true => {
                             self.current_sprite = self.sprites_to_fetch.pop_front();
-                            Some(ppu.memory.borrow().read(self.current_sprite.unwrap() + 2))
+                            self.tile_index =
+                                Some(ppu.memory.borrow().read(self.current_sprite.unwrap() + 2))
                         }
-                        false => Some(self.get_tile_index(ppu)),
+                        false => {
+                            self.tile_address = Some(self.get_tile_address(ppu));
+                            self.tile_index = Some(self.get_tile_index(ppu));
+                            self.bg_tile_attributes = Some(self.get_bg_tile_attributes(ppu));
+                        }
                     };
                     self.tilemap_col += 1;
                     self.stage = DataLow;
@@ -381,7 +390,18 @@ impl Fetcher {
                     }
                     false => {
                         if ppu.background_pixel_queue.len() <= 8 {
-                            let attrs = self.get_bg_tile_attributes(ppu);
+                            let attrs = self.bg_tile_attributes.unwrap();
+                            // if self.tile_address.unwrap() >= 0x9b80
+                            //     && self.tile_address.unwrap() <= 0x9b8f
+                            // {
+                            //     println!(
+                            //         "tile: {:x}; index: {:x}; attrs: {:x}; vram bank {}",
+                            //         self.tile_address.unwrap(),
+                            //         self.tile_index.unwrap(),
+                            //         attrs,
+                            //         ppu.memory.borrow().read(0xFF4F),
+                            //     );
+                            // }
                             self.push_background_pixels(ppu, pixels, attrs);
                             self.start_new_fetch(ppu);
                         }
@@ -396,13 +416,15 @@ impl Fetcher {
         self.is_fetching_object = self.is_sprite_queued() && ppu.background_pixel_queue.len() >= 8;
         self.stage = GetTile;
         self.tile_index = None;
+        self.tile_address = None;
+        self.bg_tile_attributes = None;
         self.tile_data_low = None;
         self.tile_data_high = None;
         self.current_sprite = None;
         self.dots_since_fetch_start = 0;
     }
 
-    fn get_tile_index(&mut self, ppu: &PPU) -> u8 {
+    fn get_tile_address(&mut self, ppu: &PPU) -> u16 {
         let mem = ppu.memory.borrow();
         let lcdc = mem.read(LCDC_ADDRESS);
 
@@ -418,6 +440,11 @@ impl Fetcher {
         let screen_offset_x = if uses_window { 0 } else { scx / 8 };
         let screen_offset_y = if uses_window { 0 } else { scy };
 
+        let tilemap_row_width: u16 = 32;
+        let tilemap_x = ((screen_offset_x + self.tilemap_col) & 0x1F) as u16;
+        let tilemap_y = (current_scanline.wrapping_add(screen_offset_y) / 8) as u16;
+        let tile_position = tilemap_y * tilemap_row_width + tilemap_x;
+
         let bg_switch_tilemap = lcdc & 0b00001000 != 0;
         let wd_switch_tilemap = lcdc & 0b01000000 != 0;
         let tilemap_start: u16 =
@@ -427,19 +454,27 @@ impl Fetcher {
                 0x9800
             };
 
-        let tilemap_row_width: u16 = 32;
-        let tilemap_x = ((screen_offset_x + self.tilemap_col) & 0x1F) as u16;
-        let tilemap_y = (current_scanline.wrapping_add(screen_offset_y) / 8) as u16;
-        let tile_position = tilemap_y * tilemap_row_width + tilemap_x;
+        tile_position + tilemap_start
+    }
 
-        mem.read(tilemap_start + tile_position)
+    fn get_tile_index(&mut self, ppu: &PPU) -> u8 {
+        let tile_address = self.get_tile_address(ppu);
+
+        let initial = ppu.memory.borrow().read(VBK_ADDRESS);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+        let data = ppu.memory.borrow().read(tile_address);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, initial);
+        data
     }
 
     fn get_bg_tile_attributes(&mut self, ppu: &PPU) -> u8 {
+        let tile_address = self.get_tile_address(ppu);
+
+        let initial = ppu.memory.borrow().read(VBK_ADDRESS);
         ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
-        let attrs = self.get_tile_index(ppu);
-        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
-        attrs
+        let data = ppu.memory.borrow().read(tile_address);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, initial);
+        data
     }
 
     fn get_tile_data(&mut self, ppu: &PPU, index: u8, is_high_byte: bool, is_object: bool) -> u8 {
@@ -460,7 +495,7 @@ impl Fetcher {
             let sprite_address = self.current_sprite.unwrap();
             ppu.memory.borrow().read(sprite_address + 3)
         } else {
-            self.get_bg_tile_attributes(ppu)
+            self.bg_tile_attributes.unwrap()
         };
 
         let is_flipped_vertically = attrs & 0b01000000 != 0;
@@ -472,17 +507,23 @@ impl Fetcher {
         let high_byte_offset = if is_high_byte { 1 } else { 0 };
         let uses_vram_bank_one = attrs & 0b00001000 != 0;
         if uses_vram_bank_one {
+            let initial = ppu.memory.borrow().read(VBK_ADDRESS);
             ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
             let data = ppu
                 .memory
                 .borrow()
                 .read(base_address + high_byte_offset + row_offset as u16);
-            ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+            ppu.memory.borrow_mut().write(VBK_ADDRESS, initial);
             data
         } else {
-            ppu.memory
+            let initial = ppu.memory.borrow().read(VBK_ADDRESS);
+            ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+            let data = ppu
+                .memory
                 .borrow()
-                .read(base_address + high_byte_offset + row_offset as u16)
+                .read(base_address + high_byte_offset + row_offset as u16);
+            ppu.memory.borrow_mut().write(VBK_ADDRESS, initial);
+            data
         }
     }
 
@@ -1028,6 +1069,7 @@ mod tests {
         let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x8000, 0x11);
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0);
         let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
         assert_eq!(result, 0x11);
     }
@@ -1037,6 +1079,7 @@ mod tests {
         let mut ppu = get_test_ppu();
         ppu.memory.borrow_mut().write(0x8001, 0x11);
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0);
         let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
         assert_eq!(result, 0x11);
     }
@@ -1047,6 +1090,7 @@ mod tests {
         ppu.memory.borrow_mut().write(0x8002, 0x11);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x01);
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0);
         let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
         assert_eq!(result, 0x11);
     }
@@ -1057,6 +1101,7 @@ mod tests {
         ppu.memory.borrow_mut().write(0x800F, 0x11);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x07);
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0);
         let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
         assert_eq!(result, 0x11);
     }
@@ -1067,9 +1112,7 @@ mod tests {
         ppu.memory.borrow_mut().write(0x8001, 0x11);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x07);
         let mut fetcher = Fetcher::new();
-        ppu.memory.borrow_mut().write(VBK_ADDRESS, 1);
-        ppu.memory.borrow_mut().write(0x9800, 0b01000000);
-        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0);
+        fetcher.bg_tile_attributes = Some(0b01000000);
         let result = fetcher.get_tile_data(&mut ppu, 0, true, false);
         assert_eq!(result, 0x11);
     }
@@ -1078,10 +1121,10 @@ mod tests {
     fn gets_tile_data_from_second_vram_bank() {
         let mut ppu = get_test_ppu();
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0b00001000);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 0x01);
         ppu.memory.borrow_mut().write(VBK_ADDRESS, 1);
         ppu.memory.borrow_mut().write(0x8002, 0x11);
-        ppu.memory.borrow_mut().write(0x9800, 0b00001000);
         ppu.memory.borrow_mut().write(VBK_ADDRESS, 0);
         let result = fetcher.get_tile_data(&mut ppu, 0, false, false);
         assert_eq!(result, 0x11);
@@ -1091,6 +1134,7 @@ mod tests {
     fn gets_tile_data_from_second_block_of_tiles_unsigned_addressing() {
         let mut ppu = get_test_ppu();
         let mut fetcher = Fetcher::new();
+        fetcher.bg_tile_attributes = Some(0);
         ppu.memory.borrow_mut().write(0x8300, 0x11);
         let result = fetcher.get_tile_data(&mut ppu, 0x30, false, false);
         assert_eq!(result, 0x11);
@@ -1110,6 +1154,20 @@ mod tests {
         let fetcher = Fetcher::new();
         let pixels = fetcher.get_pixels_from_tile_data(0x7C, 0x56);
         assert_eq!(pixels, [0, 2, 3, 1, 3, 1, 3, 0]);
+    }
+
+    #[test]
+    fn get_bg_tile_attributes_gets_correct_value() {
+        let ppu = get_test_ppu();
+        let mut fetcher = Fetcher::new();
+        ppu.memory.borrow_mut().write(0x9805, 0xA7);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x01);
+        ppu.memory.borrow_mut().write(0x9805, 0xA8);
+        ppu.memory.borrow_mut().write(VBK_ADDRESS, 0x00);
+        fetcher.tilemap_col = 5;
+        let index = fetcher.get_tile_index(&ppu);
+        let attrs = fetcher.get_bg_tile_attributes(&ppu);
+        assert_eq!((index, attrs), (0xA7, 0xA8));
     }
 
     #[test]
@@ -1221,5 +1279,28 @@ mod tests {
         for i in 1..draw.fetcher.sprites_to_fetch.len() {
             assert_ne!(draw.fetcher.sprites_to_fetch[i], 0xFE00);
         }
+    }
+
+    #[test]
+    fn gets_correct_value_for_palette() {
+        let mut ppu = get_test_ppu();
+        let draw = Draw {
+            screen_x: 0,
+            fetcher: Fetcher::new(),
+        };
+        // Set the first couple colors using auto increment of bcps
+        ppu.memory.borrow_mut().write(BCPS_ADDRESS, 0b10001000);
+        ppu.memory.borrow_mut().write(BCPD_ADDRESS, 0x35);
+        ppu.memory.borrow_mut().write(BCPD_ADDRESS, 0xad);
+        ppu.memory.borrow_mut().write(BCPD_ADDRESS, 0x7f);
+        ppu.memory.borrow_mut().write(BCPD_ADDRESS, 0xff);
+        let pixels = draw.render_background_pixel(
+            &mut ppu,
+            BackgroundPixel {
+                palette: 1,
+                color: 1,
+            },
+        );
+        assert_eq!(pixels, vec![0x7f, 0xff]);
     }
 }

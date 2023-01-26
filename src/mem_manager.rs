@@ -27,13 +27,42 @@ impl MemManager {
     }
 
     pub fn print_memory(&self, start: u16, end: u16) {
-        for (i, address) in (start..end).enumerate() {
+        print!("{:x}: ", start);
+        for (i, address) in (start..=end).enumerate() {
             if i > 0 && i % 16 == 0 {
                 println!();
+                print!("{:x}: ", address);
             }
-            print!("{:#04x} ", self.read(address));
+            print!("{:x} ", self.read(address));
         }
         println!()
+    }
+
+    pub fn print_palettes(&self) {
+        print!("Background palettes:");
+        for i in (0..self.background_palettes.len()).step_by(2) {
+            if i % 8 == 0 {
+                println!();
+            }
+            print!(
+                "{:x}{:x} ",
+                self.background_palettes[i + 1],
+                self.background_palettes[i],
+            );
+        }
+        println!();
+        print!("Object palettes:");
+        for i in (0..self.object_palettes.len()).step_by(2) {
+            if i % 8 == 0 {
+                println!();
+            }
+            print!(
+                "{:x}{:x} ",
+                self.object_palettes[i + 1],
+                self.object_palettes[i],
+            );
+        }
+        println!();
     }
 
     pub fn set_mbc(&mut self, mbc: Option<Box<dyn MBC>>) {
@@ -104,7 +133,7 @@ impl Memory for MemManager {
                 let auto_increment = ocps & 0b10000000 != 0;
                 if auto_increment {
                     self.memory[OCPS_ADDRESS as usize] =
-                        (ocps & 0b11000000) | palette_index.wrapping_add(1);
+                        (ocps & 0b10000000) | palette_index.wrapping_add(1);
                 }
             }
             BCPD_ADDRESS => {
@@ -114,7 +143,7 @@ impl Memory for MemManager {
                 let auto_increment = bcps & 0b10000000 != 0;
                 if auto_increment {
                     self.memory[BCPS_ADDRESS as usize] =
-                        (bcps & 0b11000000) | palette_index.wrapping_add(1);
+                        (bcps & 0b10000000) | palette_index.wrapping_add(1);
                 }
             }
             DIV_ADDRESS => self.memory[address as usize] = 0,

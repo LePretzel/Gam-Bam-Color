@@ -2029,6 +2029,7 @@ mod tests {
     #[test]
     fn ldh_c_a() {
         let mut cpu = CPU::new_standalone();
+        cpu.register_c = 5;
         cpu.run_test(vec![0xE2]);
         let val = cpu.read(CPU::combine_bytes(0xFF, cpu.register_c));
         assert_eq!(val, 0x11);
