@@ -147,10 +147,10 @@ impl PPU {
                 .borrow_mut()
                 .write(STAT_ADDRESS, stat_value | 0b00000100);
             // Set IF flag
-            self.memory.borrow_mut().write(
-                IF_ADDRESS,
-                self.memory.borrow().read(IF_ADDRESS) | 0b00000010,
-            );
+            let if_value = self.memory.borrow().read(IF_ADDRESS);
+            self.memory
+                .borrow_mut()
+                .write(IF_ADDRESS, if_value | 0b00000010);
         }
     }
 
