@@ -83,7 +83,7 @@ impl Emulator {
 
         let creator = canvas.texture_creator();
         let mut texture = creator
-            .create_texture_target(PixelFormatEnum::RGB555, SCREEN_WIDTH, SCREEN_HEIGHT)
+            .create_texture_target(PixelFormatEnum::BGR555, SCREEN_WIDTH, SCREEN_HEIGHT)
             .unwrap();
 
         let mut dots = 0;
