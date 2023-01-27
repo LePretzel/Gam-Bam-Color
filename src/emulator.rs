@@ -6,6 +6,7 @@ use sdl2::pixels::PixelFormatEnum;
 
 use crate::cpu::CPU;
 use crate::mbc::mbc1::MBC1;
+use crate::mbc::mbc5::MBC5;
 use crate::mbc::MBC;
 use crate::mem_manager::MemManager;
 use crate::memory::Memory;
@@ -139,6 +140,7 @@ impl Emulator {
         match header_value {
             0 => None,
             1..=3 => Some(Box::new(MBC1::new(rom_banks, ram_banks))),
+            0x19..=0x1E => Some(Box::new(MBC5::new(rom_banks, ram_banks))),
             _ => None,
         }
     }
