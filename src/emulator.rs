@@ -52,25 +52,7 @@ impl Emulator {
         // Load rom into memory
         let rom_bank_size: usize = 0x4000;
         if let Some(ref mut mbc) = mbc {
-            let rom_select_address = 0x2000;
-            for i in 0..rom_banks {
-                mbc.write(rom_select_address, i);
-                // Figure out whether the data should be written to first or second area of rom
-                let bank_offset = if i == 0 || i == 0x20 || i == 0x40 || i == 0x60 {
-                    0
-                } else {
-                    0x4000
-                };
-                for j in 0..rom_bank_size {
-                    mbc.init_write(
-                        bank_offset + j as u16,
-                        program[rom_bank_size * i as usize + j],
-                    )
-                }
-            }
-
-            // Set rom select register back to initial value of zero
-            mbc.write(rom_select_address, 0);
+            mbc.init(&program);
         } else {
             for i in 0..rom_bank_size * 2 {
                 self.memory

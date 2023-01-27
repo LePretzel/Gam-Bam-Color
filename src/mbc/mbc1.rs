@@ -30,6 +30,28 @@ impl MBC1 {
         }
         mbc
     }
+
+    fn init_write(&mut self, address: u16, data: u8) {
+        match address {
+            rom_bank_one_address @ 0x0000..=0x3FFF => {
+                let extra_bits = 0b01100000 & self.rom_bank_index;
+                self.rom[0 | (extra_bits << 5) as usize][rom_bank_one_address as usize] = data;
+            }
+            other_rom_banks_address @ 0x4000..=0x7FFF => {
+                let bank_number = if self.rom_bank_index == 0 {
+                    1
+                } else {
+                    self.rom_bank_index
+                };
+                self.rom[bank_number as usize][(other_rom_banks_address - 0x4000) as usize] = data;
+            }
+            external_ram_address @ 0xA000..=0xBFFF if self.ram_enabled => {
+                self.ram[self.ram_bank_index as usize][(external_ram_address - 0xA000) as usize] =
+                    data;
+            }
+            _ => (),
+        }
+    }
 }
 
 impl Memory for MBC1 {
@@ -108,26 +130,26 @@ impl Memory for MBC1 {
 }
 
 impl MBC for MBC1 {
-    fn init_write(&mut self, address: u16, data: u8) {
-        match address {
-            rom_bank_one_address @ 0x0000..=0x3FFF => {
-                let extra_bits = 0b01100000 & self.rom_bank_index;
-                self.rom[0 | (extra_bits << 5) as usize][rom_bank_one_address as usize] = data;
+    fn init(&mut self, program: &Vec<u8>) {
+        let rom_select_address = 0x2000;
+        for i in 0..self.rom.len() {
+            self.write(rom_select_address, i as u8);
+            // Figure out whether the data should be written to first or second area of rom
+            let bank_offset = if i == 0 || i == 0x20 || i == 0x40 || i == 0x60 {
+                0
+            } else {
+                0x4000
+            };
+            for j in 0..ROM_BANK_SIZE {
+                self.init_write(
+                    bank_offset + j as u16,
+                    program[ROM_BANK_SIZE * i as usize + j],
+                )
             }
-            other_rom_banks_address @ 0x4000..=0x7FFF => {
-                let bank_number = if self.rom_bank_index == 0 {
-                    1
-                } else {
-                    self.rom_bank_index
-                };
-                self.rom[bank_number as usize][(other_rom_banks_address - 0x4000) as usize] = data;
-            }
-            external_ram_address @ 0xA000..=0xBFFF if self.ram_enabled => {
-                self.ram[self.ram_bank_index as usize][(external_ram_address - 0xA000) as usize] =
-                    data;
-            }
-            _ => (),
         }
+
+        // Set rom select register back to initial value of zero
+        self.write(rom_select_address, 0);
     }
 }
 
