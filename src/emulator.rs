@@ -46,6 +46,8 @@ impl Emulator {
             self.memory.borrow_mut().write(i as u16, program[i]);
         }
 
+        self.setup_dmg_compat();
+
         // MBC setup
         let rom_banks = self.get_number_of_rom_banks();
         let ram_banks = self.get_number_of_ram_banks();
@@ -144,6 +146,46 @@ impl Emulator {
             0x0f..=0x013 => Some(Box::new(MBC3::new(rom_banks, ram_banks))),
             0x19..=0x1E => Some(Box::new(MBC5::new(rom_banks, ram_banks))),
             _ => None,
+        }
+    }
+
+    fn setup_dmg_compat(&self) {
+        // Check for original gb game
+        let compat_value = self.memory.borrow().read(0x0143);
+        let is_dmg_game = compat_value != 0x80 && compat_value != 0xC0;
+        if is_dmg_game {
+            // Todo: Implement compatibility palettes
+            // Just set palettes to monochrome for now
+            const BCPS_ADDRESS: u16 = 0xFF68;
+            const BCPD_ADDRESS: u16 = 0xFF69;
+            const OCPS_ADDRESS: u16 = 0xFF6A;
+            const OCPD_ADDRESS: u16 = 0xFF68;
+            let black = (0x00, 0x00);
+            let dark_gray = (0x4a, 0x29);
+            let light_gray = (0x9c, 0x73);
+            let white = (0xFF, 0x7f);
+            let colors = [white, light_gray, dark_gray, black];
+            self.memory.borrow_mut().write(BCPS_ADDRESS, 0b10000000);
+            self.memory.borrow_mut().write(OCPS_ADDRESS, 0b10000000);
+            // Initialize background palettes
+            for color in colors.iter() {
+                self.memory.borrow_mut().write(BCPD_ADDRESS, color.0);
+                self.memory.borrow_mut().write(BCPD_ADDRESS, color.1);
+            }
+
+            // Initialize object palettes
+            for color in colors.iter() {
+                self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
+                self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
+            }
+            // Do it twice because dmg has two object palettes
+            for color in colors.iter() {
+                self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
+                self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
+            }
+
+            self.memory.borrow_mut().write(BCPS_ADDRESS, 0);
+            self.memory.borrow_mut().write(OCPS_ADDRESS, 0);
         }
     }
 }
