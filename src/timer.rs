@@ -20,6 +20,14 @@ pub struct Timer {
 
 impl Timer {
     pub fn new(memory: Rc<RefCell<MemManager>>) -> Self {
+        const DOTS_PER_SCANLINE: u32 = 456;
+        let mut timer = Timer::new_test(memory);
+        // Needed because emulator starts at pc = 0x0100 instead of actual hardware that starts at pc = 0x0000
+        timer.update(DOTS_PER_SCANLINE * 147 + 180);
+        timer
+    }
+
+    fn new_test(memory: Rc<RefCell<MemManager>>) -> Self {
         let timer = Timer {
             memory,
             available_cycles_div: 0,
@@ -109,7 +117,7 @@ mod tests {
     use super::*;
 
     fn get_test_timer() -> Timer {
-        Timer::new(Rc::new(RefCell::new(MemManager::new())))
+        Timer::new_test(Rc::new(RefCell::new(MemManager::new())))
     }
 
     fn read_div_and_tima(tim: Timer) -> (u8, u8) {
