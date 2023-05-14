@@ -5,6 +5,7 @@ use std::rc::Rc;
 use sdl2::pixels::PixelFormatEnum;
 
 use crate::cpu::CPU;
+use crate::dma_controller::DMAController;
 use crate::mbc::mbc1::MBC1;
 use crate::mbc::mbc3::MBC3;
 use crate::mbc::mbc5::MBC5;
@@ -20,11 +21,13 @@ const SCREEN_HEIGHT: u32 = 144;
 const HORIZONTAL_SCALE: u32 = 5;
 const VERTICAL_SCALE: u32 = 5;
 
+// Todo: Implement cgb double speed mode
 pub struct Emulator {
     memory: Rc<RefCell<MemManager>>,
     cpu: CPU,
     ppu: PPU,
     timer: Timer,
+    dma: DMAController,
 }
 
 impl Emulator {
@@ -35,6 +38,7 @@ impl Emulator {
             cpu: CPU::new(mem.clone()),
             ppu: PPU::new(mem.clone()),
             timer: Timer::new(mem.clone()),
+            dma: DMAController::new(mem.clone()),
         }
     }
 
@@ -111,6 +115,7 @@ impl Emulator {
             let curr_clocks = self.cpu.execute();
             self.timer.update(curr_clocks);
             self.ppu.update(curr_clocks);
+            self.dma.update(curr_clocks);
             dots += curr_clocks;
         }
     }

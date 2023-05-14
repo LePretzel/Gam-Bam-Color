@@ -19,7 +19,7 @@ const WX_ADDRESS: u16 = 0xFF4B;
 const BCPS_ADDRESS: u16 = 0xFF68;
 const BCPD_ADDRESS: u16 = 0xFF69;
 const OCPS_ADDRESS: u16 = 0xFF6A;
-const OCPD_ADDRESS: u16 = 0xFF68;
+const OCPD_ADDRESS: u16 = 0xFF6B;
 const VBK_ADDRESS: u16 = 0xFF4F;
 
 const V_BLANK_TIME: u32 = 4560;
@@ -237,16 +237,18 @@ impl Scan {
             if ppu.objects_on_scanline.len() == 10 {
                 break;
             }
-            let mut object_start: i8 = (ppu.memory.borrow().read(address) as i8) - 16;
-            let object_size = if large_objects { 16 } else { 8 };
-            let object_end = object_start + object_size;
-            if object_end < 0 {
+            let object_end = ppu.memory.borrow().read(address);
+            if object_end == 0 {
                 continue;
             }
-            if object_start < 0 {
-                object_start = 0;
-            }
-            let object_pixel_range = (object_start as u8)..object_end as u8;
+            let object_size = if large_objects { 16 } else { 8 };
+            let object_start = if object_end < object_size {
+                0
+            } else {
+                object_end - object_size
+            };
+
+            let object_pixel_range = object_start..object_end;
             if object_pixel_range.contains(&ppu.current_scanline()) {
                 ppu.objects_on_scanline.push(address);
             }
@@ -340,6 +342,7 @@ impl Fetcher {
                     match self.is_fetching_object {
                         true => {
                             self.current_sprite = self.sprites_to_fetch.pop_front();
+                            let sprite = self.current_sprite.unwrap();
                             self.tile_index =
                                 Some(ppu.memory.borrow().read(self.current_sprite.unwrap() + 2))
                         }
@@ -347,9 +350,9 @@ impl Fetcher {
                             self.tile_address = Some(self.get_tile_address(ppu));
                             self.tile_index = Some(self.get_tile_index(ppu));
                             self.bg_tile_attributes = Some(self.get_bg_tile_attributes(ppu));
+                            self.tilemap_col += 1;
                         }
                     };
-                    self.tilemap_col += 1;
                     self.stage = DataLow;
                 }
             }
@@ -391,18 +394,9 @@ impl Fetcher {
                     false => {
                         if ppu.background_pixel_queue.len() <= 8 {
                             let attrs = self.bg_tile_attributes.unwrap();
-                            // if self.tile_address.unwrap() >= 0x9b80
-                            //     && self.tile_address.unwrap() <= 0x9b8f
-                            // {
-                            //     println!(
-                            //         "tile: {:x}; index: {:x}; attrs: {:x}; vram bank {}",
-                            //         self.tile_address.unwrap(),
-                            //         self.tile_index.unwrap(),
-                            //         attrs,
-                            //         ppu.memory.borrow().read(0xFF4F),
-                            //     );
-                            // }
                             self.push_background_pixels(ppu, pixels, attrs);
+                            self.start_new_fetch(ppu);
+                        } else if self.is_sprite_queued() {
                             self.start_new_fetch(ppu);
                         }
                     }
@@ -498,11 +492,18 @@ impl Fetcher {
             self.bg_tile_attributes.unwrap()
         };
 
+        let using_large_objects = lcdc & 0b00000100 != 0;
+        let height = if is_object && using_large_objects {
+            16
+        } else {
+            8
+        };
+
         let is_flipped_vertically = attrs & 0b01000000 != 0;
         let row_offset = if is_flipped_vertically {
-            (7 - (ppu.current_scanline() % 8)) * 2
+            ((height - 1) - (ppu.current_scanline() % height)) * 2
         } else {
-            (ppu.current_scanline() % 8) * 2
+            (ppu.current_scanline() % height) * 2
         };
         let high_byte_offset = if is_high_byte { 1 } else { 0 };
         let uses_vram_bank_one = attrs & 0b00001000 != 0;
@@ -561,11 +562,11 @@ impl Fetcher {
         let attrs = ppu.memory.borrow().read(sprite_address + 3);
 
         let is_flipped_horizontal = attrs & 0b00010000 != 0;
-        let mut push = |pixel| {
+        let mut pop_pixel = || {
             if is_flipped_horizontal {
-                ppu.object_pixel_queue.push_back(pixel);
+                pixels.pop_front()
             } else {
-                ppu.object_pixel_queue.push_front(pixel);
+                pixels.pop_back()
             }
         };
 
@@ -573,8 +574,8 @@ impl Fetcher {
         let bg_prio = if attrs & 0b10000000 != 0 { true } else { false };
         let sprite_prio = ((sprite_address - 0xFE00) / 4) as u8;
         for _ in 0..8 {
-            let color = pixels.pop_back().unwrap();
-            push(ObjectPixel {
+            let color = pop_pixel().unwrap();
+            ppu.object_pixel_queue.push_back(ObjectPixel {
                 color,
                 palette,
                 sprite_prio,
@@ -588,7 +589,9 @@ impl Fetcher {
     }
 
     fn schedule_sprite_fetch(&mut self, object_address: u16) {
-        self.sprites_to_fetch.push_back(object_address);
+        if !self.sprites_to_fetch.contains(&object_address) {
+            self.sprites_to_fetch.push_back(object_address);
+        }
     }
 }
 
@@ -622,7 +625,11 @@ impl Draw {
                     continue;
                 }
                 let object_start = object_end - 8;
-                if object_start == self.screen_x + ppu.memory.borrow().read(SCX_ADDRESS) {
+                if object_start
+                    == self
+                        .screen_x
+                        .wrapping_add(ppu.memory.borrow().read(SCX_ADDRESS))
+                {
                     self.fetcher.schedule_sprite_fetch(*object_address);
                 }
             }
@@ -660,6 +667,7 @@ impl Draw {
 
     fn push_pixel_to_lcd(&self, ppu: &mut PPU) {
         assert!(ppu.background_pixel_queue.len() > 8);
+        let bg_pixel = ppu.background_pixel_queue.pop_front();
         let obj_pixel = ppu.object_pixel_queue.pop_front();
         if let Some(pixel) = obj_pixel {
             if !pixel.bg_prio && pixel.color != 0 {
@@ -670,7 +678,6 @@ impl Draw {
                 return;
             }
         }
-        let bg_pixel = ppu.background_pixel_queue.pop_front();
         let rendered_pixel = self.render_background_pixel(ppu, bg_pixel.unwrap());
         for i in rendered_pixel.iter() {
             ppu.current_frame.push(*i);
@@ -1302,5 +1309,22 @@ mod tests {
             },
         );
         assert_eq!(pixels, vec![0x7f, 0xff]);
+    }
+
+    #[test]
+    fn get_tile_index_gets_gets_lower_data_for_large_sprites() {
+        let mut ppu = get_test_ppu();
+        ppu.set_scanline(8);
+        let lcdc = ppu.memory.borrow().read(LCDC_ADDRESS);
+        ppu.memory
+            .borrow_mut()
+            .write(LCDC_ADDRESS, lcdc | 0b00000100);
+        for i in 0x8000..=0x8020 {
+            ppu.memory.borrow_mut().write(i, (i - 0x8000) as u8);
+        }
+        let mut fetcher = Fetcher::new();
+        fetcher.current_sprite = Some(0);
+        let res = fetcher.get_tile_data(&ppu, 0, false, true);
+        assert_eq!(res, 16);
     }
 }
