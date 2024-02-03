@@ -6,6 +6,7 @@ use sdl2::pixels::PixelFormatEnum;
 
 use crate::cpu::CPU;
 use crate::dma_controller::DMAController;
+use crate::input_handler::InputHandler;
 use crate::mbc::mbc1::MBC1;
 use crate::mbc::mbc3::MBC3;
 use crate::mbc::mbc5::MBC5;
@@ -28,6 +29,7 @@ pub struct Emulator {
     ppu: PPU,
     timer: Timer,
     dma: DMAController,
+    input: InputHandler,
 }
 
 impl Emulator {
@@ -39,6 +41,7 @@ impl Emulator {
             ppu: PPU::new(mem.clone()),
             timer: Timer::new(mem.clone()),
             dma: DMAController::new(mem.clone()),
+            input: InputHandler::new(mem.clone()),
         }
     }
 
@@ -95,13 +98,16 @@ impl Emulator {
 
         let mut dots = 0;
         let mut poll_timer = 0;
+        let poll_limit = 1000;
         loop {
             poll_timer += 1;
-            if poll_timer == 1000 {
-                poll_timer -= 1000;
-                for e in event_pump.poll_iter() {}
+            if poll_timer == poll_limit {
+                poll_timer = 0;
             }
             if dots >= DOTS_PER_FRAME {
+                for e in event_pump.poll_iter() {
+                    self.input.update(e);
+                }
                 dots -= DOTS_PER_FRAME;
                 // Todo: sleep until time for frame to be displayed
 

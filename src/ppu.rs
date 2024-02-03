@@ -827,6 +827,7 @@ mod tests {
     #[test]
     fn scan_mode_finds_an_object_on_scanline() {
         let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0b00000100);
         ppu.memory.borrow_mut().write(LY_ADDRESS, 85);
         set_obj_y_pos(&mut ppu, 0, 100);
         ppu.update(80);
@@ -892,6 +893,7 @@ mod tests {
     #[test]
     fn selects_object_if_only_first_row_is_on_scanline() {
         let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0b00000100);
         set_obj_y_pos(&mut ppu, 0, 16);
         ppu.update(80);
         assert_eq!(ppu.objects_on_scanline.len(), 1);
@@ -1270,6 +1272,7 @@ mod tests {
     #[test]
     fn same_object_is_not_queued_more_than_once() {
         let mut ppu = get_test_ppu();
+        ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0b00000100);
         set_obj_y_pos(&mut ppu, 0, 16);
         ppu.memory.borrow_mut().write(0xFE01, 0x08);
         ppu.update(80); // Complete oam scan and transition to draw

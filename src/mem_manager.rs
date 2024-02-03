@@ -70,7 +70,6 @@ impl MemManager {
     }
 }
 
-const JOYP_ADDRESS: u16 = 0xFF00;
 const DIV_ADDRESS: u16 = 0xFF04;
 const BCPS_ADDRESS: u16 = 0xFF68;
 const BCPD_ADDRESS: u16 = 0xFF69;
@@ -84,7 +83,6 @@ impl Memory for MemManager {
         let ram_bank = self.memory[SVBK_ADDRESS as usize] & 0b00000111;
         let vram_bank = self.memory[VBK_ADDRESS as usize] & 0b00000001;
         match address {
-            JOYP_ADDRESS => 0xFF, // Delete this
             rom_address @ 0x0000..=0x7FFF if self.mbc.is_some() => {
                 self.mbc.as_ref().unwrap().read(rom_address)
             }
@@ -112,7 +110,14 @@ impl Memory for MemManager {
     fn write(&mut self, address: u16, data: u8) {
         let ram_bank = self.memory[SVBK_ADDRESS as usize] & 0b00000111;
         let vram_bank = self.memory[VBK_ADDRESS as usize] & 0b00000001;
+
         match address {
+            joyp_address @ 0xFF00 => {
+                // Ignore writes to the lower 4 bits of this register since they are only
+                // used to detect if the game is running on super gameboy hardware
+                let curr_value = self.memory[joyp_address as usize] & 0b00001111;
+                self.memory[address as usize] = (data & 0b11110000) | curr_value;
+            }
             rom_address @ 0x0000..=0x7FFF if self.mbc.is_some() => {
                 self.mbc.as_mut().unwrap().write(rom_address, data);
             }
