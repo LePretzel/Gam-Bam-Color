@@ -30,10 +30,32 @@ impl InputHandler {
         input
     }
 
-    pub fn update(&mut self, e: Event) {
-        // Needed mainly to check if the direction and action button flags have changed
-        self.update_state();
+    pub fn update(&mut self) {
+        self.check_action_or_dir();
+        self.write_state();
+    }
 
+    fn check_action_or_dir(&mut self) {
+        let joyp = self.memory.borrow().read(JOYP_ADDRESS);
+        self.action_selected = joyp & 0b00100000 == 0;
+        self.direction_selected = joyp & 0b00010000 == 0;
+    }
+
+    fn write_state(&mut self) {
+        let mut data = 0b11111111;
+        self.check_action_or_dir();
+        if self.action_selected {
+            data = data & 0b11011111 & (0xF0 | self.action_input);
+        }
+        if self.direction_selected {
+            data = data & 0b11101111 & (0xF0 | self.direction_input);
+        }
+        //println!("{data}");
+
+        self.memory.borrow_mut().force_write(JOYP_ADDRESS, data);
+    }
+
+    pub fn update_joypad(&mut self, e: Event) {
         match e {
             Event::Quit { .. }
             | Event::KeyDown {
@@ -44,7 +66,6 @@ impl InputHandler {
                 keycode: Some(k), ..
             } => {
                 self.handle_keydown(k);
-                self.write_current_state();
                 // Queue interrupt
                 let if_address = 0xFF0F;
                 let if_value = self.memory.borrow().read(if_address);
@@ -56,32 +77,9 @@ impl InputHandler {
                 keycode: Some(k), ..
             } => {
                 self.handle_keyup(k);
-                self.write_current_state();
             }
             _ => {}
         }
-    }
-
-    fn update_state(&mut self) {
-        let joyp = self.memory.borrow().read(JOYP_ADDRESS);
-        // Set the lower four bits to the stored value of directions or action buttons
-        self.action_selected = joyp & 0b00100000 == 0;
-        self.direction_selected = joyp & 0b00010000 == 0;
-    }
-
-    fn write_current_state(&self) {
-        let mut data = 0b11111111;
-        if self.action_selected {
-            println!("a_select");
-            data = data & 0b11011111 & (0xF0 | self.action_input);
-        }
-        if self.direction_selected {
-            println!("d_select");
-            data = data & 0b11101111 & (0xF0 | self.direction_input);
-        }
-        //println!("{data}");
-
-        self.memory.borrow_mut().force_write(JOYP_ADDRESS, data);
     }
 
     fn handle_keydown(&mut self, k: Keycode) {

@@ -103,7 +103,10 @@ impl Memory for MemManager {
                 let palette_index = self.memory[BCPS_ADDRESS as usize] & 0b00111111;
                 self.background_palettes[palette_index as usize]
             }
-            _ => self.memory[address as usize],
+            _ => {
+                let result = self.memory[address as usize];
+                result
+            }
         }
     }
 

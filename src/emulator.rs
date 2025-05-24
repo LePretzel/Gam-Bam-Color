@@ -106,7 +106,7 @@ impl Emulator {
             }
             if dots >= DOTS_PER_FRAME {
                 for e in event_pump.poll_iter() {
-                    self.input.update(e);
+                    self.input.update_joypad(e);
                 }
                 dots -= DOTS_PER_FRAME;
                 // Todo: sleep until time for frame to be displayed
@@ -118,6 +118,7 @@ impl Emulator {
                 canvas.copy(&texture, None, None).unwrap();
                 canvas.present();
             }
+            self.input.update();
             let curr_clocks = self.cpu.execute();
             self.timer.update(curr_clocks);
             self.ppu.update(curr_clocks);

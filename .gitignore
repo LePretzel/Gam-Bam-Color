@@ -1,2 +1,4 @@
 /target
 /src/test_roms
+.vscode/
+Cargo.lock
