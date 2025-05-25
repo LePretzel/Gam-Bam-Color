@@ -79,7 +79,7 @@ impl PPU {
             object_pixel_queue: VecDeque::with_capacity(16),
             background_pixel_queue: VecDeque::with_capacity(16),
         };
-        ppu.set_mode(initial_mode.clone());
+        ppu.set_mode(initial_mode);
 
         ppu.memory.borrow_mut().write(LCDC_ADDRESS, 0x91);
         ppu.memory.borrow_mut().write(BGP_ADDRESS, 0xFC);
@@ -109,7 +109,6 @@ impl PPU {
         self.mode = mode.clone();
         self.check_vblank_interrupt();
         self.set_stat_mode();
-        self.check_coincidence_stat_interrupt();
         self.check_mode_stat_interrupt();
     }
 
@@ -151,6 +150,9 @@ impl PPU {
             self.memory
                 .borrow_mut()
                 .write(IF_ADDRESS, if_value | 0b00000010);
+
+            // Make sure it only happens once per line
+            println!("{}", self.current_scanline());
         }
     }
 
@@ -277,7 +279,7 @@ impl PPUMode for Scan {
         for _ in 0..6 {
             new_mode.borrow_mut().fetcher.tick(ppu);
         }
-        ppu.set_mode(new_mode.clone());
+        ppu.set_mode(new_mode);
     }
 
     fn get_mode_number(&self) -> u8 {
@@ -343,8 +345,7 @@ impl Fetcher {
                         true => {
                             self.current_sprite = self.sprites_to_fetch.pop_front();
                             let sprite = self.current_sprite.unwrap();
-                            self.tile_index =
-                                Some(ppu.memory.borrow().read(self.current_sprite.unwrap() + 2))
+                            self.tile_index = Some(ppu.memory.borrow().read(sprite + 2))
                         }
                         false => {
                             self.tile_address = Some(self.get_tile_address(ppu));
