@@ -104,6 +104,10 @@ impl PPU {
         self.check_coincidence_stat_interrupt();
     }
 
+    fn get_scanline(&self) -> u8 {
+        self.memory.borrow().read(LY_ADDRESS)
+    }
+
     fn set_mode(&mut self, mode: Rc<RefCell<dyn PPUMode>>) {
         self.mode_dots_passed = 0;
         self.mode = mode.clone();
@@ -236,21 +240,16 @@ impl Scan {
         let oam_range = 0xFE00..=0xFE9F;
         let object_memory_size = 4;
         for address in (oam_range).step_by(object_memory_size) {
+            let y = ppu.get_scanline();
             if ppu.objects_on_scanline.len() == 10 {
                 break;
             }
-            let object_end = ppu.memory.borrow().read(address);
-            if object_end == 0 {
-                continue;
-            }
-            let object_size = if large_objects { 16 } else { 8 };
-            let object_start = if object_end < object_size {
-                0
-            } else {
-                object_end - object_size
-            };
+            let object_y = ppu.memory.borrow().read(address);
 
-            let object_pixel_range = object_start..object_end;
+            let object_size = if large_objects { 16 } else { 8 };
+            let object_start = std::cmp::max(0, object_y as i8 - 16) as u8;
+            let object_pixel_range = object_start..(object_start + object_size);
+
             if object_pixel_range.contains(&ppu.current_scanline()) {
                 ppu.objects_on_scanline.push(address);
             }

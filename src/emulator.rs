@@ -131,6 +131,8 @@ impl Emulator {
         let status = self.load_rom(rom_path);
         if let Ok(_) = status {
             self.run();
+        } else {
+            println!("Couldn't load rom");
         }
     }
 

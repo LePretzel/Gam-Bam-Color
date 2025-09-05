@@ -10,5 +10,3 @@ arrayvec = "0.7.6"
 
 [dependencies.sdl2]
 version = "0.37.0"
-default-features = false
-features = ["bundled"]

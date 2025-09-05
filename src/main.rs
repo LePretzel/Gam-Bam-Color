@@ -54,6 +54,8 @@ fn main() {
     let dr_mario_path = "src/test_roms/dr_mario.gb";
     let wario_path = "src/test_roms/wario.gb";
 
+    let cgb_acid = "src/test_roms/cgb-acid2.gbc";
+
     let mut emulator = Emulator::new();
     emulator.load_and_run(zelda_rom_path);
 }
