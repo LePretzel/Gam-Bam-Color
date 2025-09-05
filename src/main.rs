@@ -57,5 +57,5 @@ fn main() {
     let cgb_acid = "src/test_roms/cgb-acid2.gbc";
 
     let mut emulator = Emulator::new();
-    emulator.load_and_run(zelda_rom_path);
+    emulator.load_and_run(cgb_acid);
 }

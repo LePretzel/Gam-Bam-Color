@@ -95,17 +95,13 @@ impl PPU {
         self.completed_frame.clone()
     }
 
-    fn current_scanline(&self) -> u8 {
+    fn get_current_scanline(&self) -> u8 {
         self.memory.borrow().read(LY_ADDRESS)
     }
 
     fn set_scanline(&mut self, value: u8) {
         self.memory.borrow_mut().write(LY_ADDRESS, value);
         self.check_coincidence_stat_interrupt();
-    }
-
-    fn get_scanline(&self) -> u8 {
-        self.memory.borrow().read(LY_ADDRESS)
     }
 
     fn set_mode(&mut self, mode: Rc<RefCell<dyn PPUMode>>) {
@@ -143,7 +139,8 @@ impl PPU {
     fn check_coincidence_stat_interrupt(&mut self) {
         let stat_value = self.memory.borrow().read(STAT_ADDRESS);
         let coincidence_enabled = stat_value & 0b01000000 != 0;
-        if coincidence_enabled && self.current_scanline() == self.memory.borrow().read(LYC_ADDRESS)
+        if coincidence_enabled
+            && self.get_current_scanline() == self.memory.borrow().read(LYC_ADDRESS)
         {
             // Set STAT flag
             self.memory
@@ -156,7 +153,7 @@ impl PPU {
                 .write(IF_ADDRESS, if_value | 0b00000010);
 
             // Make sure it only happens once per line
-            println!("{}", self.current_scanline());
+            println!("{}", self.get_current_scanline());
         }
     }
 
@@ -191,12 +188,12 @@ impl PPUMode for HBlank {
 
     fn transition(&self, ppu: &mut PPU) {
         let last_scanline = 143;
-        if ppu.current_scanline() == last_scanline {
+        if ppu.get_current_scanline() == last_scanline {
             ppu.set_mode(Rc::new(RefCell::new(VBlank)));
         } else {
             ppu.set_mode(Rc::new(RefCell::new(Scan)));
             ppu.clear_pixel_queues();
-            ppu.set_scanline(ppu.current_scanline() + 1);
+            ppu.set_scanline(ppu.get_current_scanline() + 1);
         }
     }
 
@@ -240,17 +237,17 @@ impl Scan {
         let oam_range = 0xFE00..=0xFE9F;
         let object_memory_size = 4;
         for address in (oam_range).step_by(object_memory_size) {
-            let y = ppu.get_scanline();
             if ppu.objects_on_scanline.len() == 10 {
                 break;
             }
             let object_y = ppu.memory.borrow().read(address);
 
             let object_size = if large_objects { 16 } else { 8 };
-            let object_start = std::cmp::max(0, object_y as i8 - 16) as u8;
-            let object_pixel_range = object_start..(object_start + object_size);
+            let real_start = object_y as i8 - 16;
+            let on_screen_start = std::cmp::max(0, real_start) as u8;
+            let object_pixel_range = on_screen_start..(on_screen_start + object_size);
 
-            if object_pixel_range.contains(&ppu.current_scanline()) {
+            if object_pixel_range.contains(&ppu.get_current_scanline()) {
                 ppu.objects_on_scanline.push(address);
             }
         }
@@ -424,13 +421,14 @@ impl Fetcher {
 
         let wx = mem.read(WX_ADDRESS).wrapping_sub(7);
         let wy = mem.read(WY_ADDRESS);
-        let current_scanline = ppu.current_scanline();
-        let is_window_tile = current_scanline >= wy / 8 && (self.tilemap_col >= wx / 8);
+        let scx = mem.read(SCX_ADDRESS);
+        let scy = mem.read(SCY_ADDRESS);
+
+        let current_scanline = ppu.get_current_scanline();
+        let is_window_tile = current_scanline >= wy && scx >= (wx as i16 - 7).max(0) as u8;
         let window_enabled = lcdc & 0b00100000 != 0;
         let uses_window = window_enabled && is_window_tile;
 
-        let scx = mem.read(SCX_ADDRESS);
-        let scy = mem.read(SCY_ADDRESS);
         let screen_offset_x = if uses_window { 0 } else { scx / 8 };
         let screen_offset_y = if uses_window { 0 } else { scy };
 
@@ -501,9 +499,9 @@ impl Fetcher {
 
         let is_flipped_vertically = attrs & 0b01000000 != 0;
         let row_offset = if is_flipped_vertically {
-            ((height - 1) - (ppu.current_scanline() % height)) * 2
+            ((height - 1) - (ppu.get_current_scanline() % height)) * 2
         } else {
-            (ppu.current_scanline() % height) * 2
+            (ppu.get_current_scanline() % height) * 2
         };
         let high_byte_offset = if is_high_byte { 1 } else { 0 };
         let uses_vram_bank_one = attrs & 0b00001000 != 0;

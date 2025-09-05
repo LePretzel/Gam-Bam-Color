@@ -122,7 +122,7 @@ impl Emulator {
             let curr_clocks = self.cpu.execute();
             self.timer.update(curr_clocks);
             self.ppu.update(curr_clocks);
-            self.dma.update(curr_clocks);
+            // self.dma.update(curr_clocks);
             dots += curr_clocks;
         }
     }
