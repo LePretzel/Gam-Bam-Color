@@ -583,8 +583,8 @@ const STAT_ADDRESS: u16 = 0xFF41;
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
-        let oam_locked = false; //mode > 1; // Timing issue with these. Fix later
-        let vram_locked = false; // mode > 2;
+        let oam_locked = mode > 1; // Timing issue with these. Fix later
+        let vram_locked = false; //mode > 2;
         let locked_read_value = 0xFF;
         match address {
             0x8000..=0x9FFF if vram_locked => locked_read_value,
@@ -596,7 +596,7 @@ impl Memory for CPU {
 
     fn write(&mut self, address: u16, data: u8) {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;
-        let oam_locked = false; //mode > 1; // Timing issue with these. Fix later
+        let oam_locked = mode > 1; // Timing issue with these. Fix later
         let vram_locked = false; //mode > 2;
 
         //For debugging: remove later

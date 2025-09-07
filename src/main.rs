@@ -3,6 +3,7 @@ use emulator::Emulator;
 mod cpu;
 mod dma_controller;
 mod emulator;
+mod fetcher;
 mod input_handler;
 mod mbc;
 mod mem_manager;
