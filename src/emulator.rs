@@ -173,31 +173,37 @@ impl Emulator {
             const BCPS_ADDRESS: u16 = 0xFF68;
             const BCPD_ADDRESS: u16 = 0xFF69;
             const OCPS_ADDRESS: u16 = 0xFF6A;
-            const OCPD_ADDRESS: u16 = 0xFF68;
+            const OCPD_ADDRESS: u16 = 0xFF6B;
             let black = (0x00, 0x00);
             let dark_gray = (0x4a, 0x29);
             let light_gray = (0x9c, 0x73);
             let white = (0xFF, 0x7f);
             let colors = [white, light_gray, dark_gray, black];
+            // Auto-increment
             self.memory.borrow_mut().write(BCPS_ADDRESS, 0b10000000);
             self.memory.borrow_mut().write(OCPS_ADDRESS, 0b10000000);
+
             // Initialize background palettes
-            for color in colors.iter() {
-                self.memory.borrow_mut().write(BCPD_ADDRESS, color.0);
-                self.memory.borrow_mut().write(BCPD_ADDRESS, color.1);
+            for _ in 0..8 {
+                for color in colors.iter() {
+                    self.memory.borrow_mut().write(BCPD_ADDRESS, color.0);
+                    self.memory.borrow_mut().write(BCPD_ADDRESS, color.1);
+                }
             }
 
             // Initialize object palettes
-            for color in colors.iter() {
-                self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
-                self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
+            for _ in 0..8 {
+                for color in colors.iter() {
+                    self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
+                    self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
+                }
             }
-            // Do it twice because dmg has two object palettes
-            for color in colors.iter() {
-                self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
-                self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
-            }
-
+            // // Do it twice because dmg has two object palettes
+            // for color in colors.iter() {
+            //     self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
+            //     self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
+            // }
+            //
             self.memory.borrow_mut().write(BCPS_ADDRESS, 0);
             self.memory.borrow_mut().write(OCPS_ADDRESS, 0);
         }
