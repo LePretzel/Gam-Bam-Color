@@ -327,11 +327,7 @@ impl Draw {
                     continue;
                 }
                 let object_start = object_end - 8;
-                if object_start
-                    == ppu
-                        .screen_x
-                        .wrapping_add(ppu.memory.borrow().read(SCX_ADDRESS))
-                {
+                if object_start == ppu.screen_x {
                     self.obj_fetcher.start_fetch(*object_address);
                 }
             }

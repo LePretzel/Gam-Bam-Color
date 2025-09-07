@@ -58,5 +58,5 @@ fn main() {
     let cgb_acid = "src/test_roms/cgb-acid2.gbc";
 
     let mut emulator = Emulator::new();
-    emulator.load_and_run(cgb_acid);
+    emulator.load_and_run(mario_land_path);
 }
