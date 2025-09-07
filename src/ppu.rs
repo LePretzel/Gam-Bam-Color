@@ -237,7 +237,7 @@ pub(crate) struct Scan;
 impl Scan {
     fn select_objects(&self, ppu: &mut PPU) {
         ppu.objects_on_scanline.clear();
-        let large_objects = ppu.memory.borrow().read(LCDC_ADDRESS) & 0b00000100 == 4;
+        let large_objects_enabled = ppu.memory.borrow().read(LCDC_ADDRESS) & 0b00000100 == 4;
         let oam_range = 0xFE00..=0xFE9F;
         let object_memory_size = 4;
         for address in (oam_range).step_by(object_memory_size) {
@@ -247,11 +247,8 @@ impl Scan {
             let object_y = ppu.memory.borrow().read(address);
 
             let object_attrs = ppu.memory.borrow().read(address + 3);
-            let object_size = if large_objects && object_attrs & 0b01000000 != 0 {
-                16
-            } else {
-                8
-            };
+            let is_large_object = object_attrs & 0b01000000 != 0;
+            let object_size = if large_objects_enabled { 16 } else { 8 };
             let object_top = object_y as i8 - 16;
             let object_bottom = object_top + object_size;
             let object_pixel_range = object_top..object_bottom;

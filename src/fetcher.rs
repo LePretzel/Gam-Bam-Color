@@ -336,12 +336,16 @@ impl SpriteFetcher {
         let using_large_objects = lcdc & 0b00000100 != 0;
         let height = if using_large_objects { 16 } else { 8 };
 
+        let object_y = ppu.memory.borrow().read(self.current_sprite.unwrap());
+        let sprite_screen_y = object_y.wrapping_sub(16);
+        let row_in_sprite = ppu.get_current_scanline().wrapping_sub(sprite_screen_y);
+
         let is_flipped_vertically = attrs & 0b01000000 != 0;
         let row_offset = if is_flipped_vertically {
-            ((height - 1) - (ppu.get_current_scanline() % height)) * 2
+            (height - 1) - row_in_sprite
         } else {
-            (ppu.get_current_scanline() % height) * 2
-        };
+            row_in_sprite
+        } * 2;
         let high_byte_offset = if is_high_byte { 1 } else { 0 };
 
         let initial = ppu.memory.borrow().read(VBK_ADDRESS);
@@ -375,7 +379,7 @@ impl SpriteFetcher {
         let sprite_address = self.current_sprite.unwrap();
         let attrs = ppu.memory.borrow().read(sprite_address + 3);
 
-        let is_flipped_horizontal = attrs & 0b00010000 != 0;
+        let is_flipped_horizontal = attrs & 0b00100000 != 0;
         let mut pop_pixel = || {
             if is_flipped_horizontal {
                 pixels.pop_front()
