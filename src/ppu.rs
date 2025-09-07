@@ -246,7 +246,12 @@ impl Scan {
             }
             let object_y = ppu.memory.borrow().read(address);
 
-            let object_size = if large_objects { 16 } else { 8 };
+            let object_attrs = ppu.memory.borrow().read(address + 3);
+            let object_size = if large_objects && object_attrs & 0b01000000 != 0 {
+                16
+            } else {
+                8
+            };
             let object_top = object_y as i8 - 16;
             let object_bottom = object_top + object_size;
             let object_pixel_range = object_top..object_bottom;
