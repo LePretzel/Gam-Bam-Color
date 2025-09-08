@@ -1,6 +1,10 @@
 use crate::mbc::MBC;
 use crate::memory::Memory;
 
+use crate::registers::{
+    BCPD_ADDRESS, BCPS_ADDRESS, DIV_ADDRESS, OCPD_ADDRESS, OCPS_ADDRESS, SVBK_ADDRESS, VBK_ADDRESS,
+};
+
 pub struct MemManager {
     memory: [u8; 0xFFFF + 1],
     vram_bank_one: [u8; 0x2000 + 1],
@@ -69,14 +73,6 @@ impl MemManager {
         self.mbc = mbc;
     }
 }
-
-const DIV_ADDRESS: u16 = 0xFF04;
-const BCPS_ADDRESS: u16 = 0xFF68;
-const BCPD_ADDRESS: u16 = 0xFF69;
-const OCPS_ADDRESS: u16 = 0xFF6A;
-const OCPD_ADDRESS: u16 = 0xFF6B;
-const SVBK_ADDRESS: u16 = 0xFF70;
-const VBK_ADDRESS: u16 = 0xFF4F;
 
 impl Memory for MemManager {
     fn read(&self, address: u16) -> u8 {
@@ -162,6 +158,8 @@ impl Memory for MemManager {
 
 #[cfg(test)]
 mod tests {
+    use crate::registers::DIV_ADDRESS;
+
     use super::*;
 
     #[test]

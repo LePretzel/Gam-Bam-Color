@@ -9,6 +9,7 @@ mod mbc;
 mod mem_manager;
 mod memory;
 mod ppu;
+mod registers;
 mod timer;
 
 fn main() {
@@ -58,5 +59,5 @@ fn main() {
     let cgb_acid = "src/test_roms/cgb-acid2.gbc";
 
     let mut emulator = Emulator::new();
-    emulator.load_and_run(dr_mario_path);
+    emulator.load_and_run(cgb_acid);
 }

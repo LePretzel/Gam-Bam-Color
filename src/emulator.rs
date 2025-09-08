@@ -16,6 +16,8 @@ use crate::memory::Memory;
 use crate::ppu::PPU;
 use crate::timer::Timer;
 
+use crate::registers::{BCPD_ADDRESS, BCPS_ADDRESS, OCPD_ADDRESS, OCPS_ADDRESS};
+
 const DOTS_PER_FRAME: u32 = 70224;
 const SCREEN_WIDTH: u32 = 160;
 const SCREEN_HEIGHT: u32 = 144;
@@ -117,6 +119,7 @@ impl Emulator {
                     .unwrap();
                 canvas.copy(&texture, None, None).unwrap();
                 canvas.present();
+                // println!("New frame");
             }
             self.input.update();
             let curr_clocks = self.cpu.execute();
@@ -170,10 +173,6 @@ impl Emulator {
         if is_dmg_game {
             // Todo: Implement compatibility palettes
             // Just set palettes to monochrome for now
-            const BCPS_ADDRESS: u16 = 0xFF68;
-            const BCPD_ADDRESS: u16 = 0xFF69;
-            const OCPS_ADDRESS: u16 = 0xFF6A;
-            const OCPD_ADDRESS: u16 = 0xFF6B;
             let black = (0x00, 0x00);
             let dark_gray = (0x4a, 0x29);
             let light_gray = (0x9c, 0x73);
@@ -198,12 +197,7 @@ impl Emulator {
                     self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
                 }
             }
-            // // Do it twice because dmg has two object palettes
-            // for color in colors.iter() {
-            //     self.memory.borrow_mut().write(OCPD_ADDRESS, color.0);
-            //     self.memory.borrow_mut().write(OCPD_ADDRESS, color.1);
-            // }
-            //
+
             self.memory.borrow_mut().write(BCPS_ADDRESS, 0);
             self.memory.borrow_mut().write(OCPS_ADDRESS, 0);
         }

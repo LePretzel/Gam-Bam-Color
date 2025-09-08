@@ -5,23 +5,10 @@ use crate::memory::Memory;
 
 use crate::fetcher::{BackgroundFetcher, SpriteFetcher};
 
-const IF_ADDRESS: u16 = 0xFF0F;
-const LCDC_ADDRESS: u16 = 0xFF40;
-const STAT_ADDRESS: u16 = 0xFF41;
-const SCY_ADDRESS: u16 = 0xFF42;
-const SCX_ADDRESS: u16 = 0xFF43;
-const LY_ADDRESS: u16 = 0xFF44;
-const LYC_ADDRESS: u16 = 0xFF45;
-const BGP_ADDRESS: u16 = 0xFF47;
-const OBP0_ADDRESS: u16 = 0xFF48;
-const OBP1_ADDRESS: u16 = 0xFF49;
-const WY_ADDRESS: u16 = 0xFF4A;
-const WX_ADDRESS: u16 = 0xFF4B;
-const BCPS_ADDRESS: u16 = 0xFF68;
-const BCPD_ADDRESS: u16 = 0xFF69;
-const OCPS_ADDRESS: u16 = 0xFF6A;
-const OCPD_ADDRESS: u16 = 0xFF6B;
-const VBK_ADDRESS: u16 = 0xFF4F;
+use crate::registers::{
+    BCPD_ADDRESS, BCPS_ADDRESS, BGP_ADDRESS, IF_ADDRESS, LCDC_ADDRESS, LYC_ADDRESS, LY_ADDRESS,
+    OCPD_ADDRESS, OCPS_ADDRESS, SCX_ADDRESS, STAT_ADDRESS,
+};
 
 const V_BLANK_TIME: u32 = 4560;
 const SCAN_TIME: u32 = 80;
@@ -157,7 +144,12 @@ impl PPU {
             self.memory
                 .borrow_mut()
                 .write(IF_ADDRESS, if_value | 0b00000010);
-            println!("coincide {}", self.get_current_scanline());
+            // println!(
+            //     "coincide at {}. WX is {} WY is {}.",
+            //     self.get_current_scanline(),
+            //     self.memory.borrow().read(WX_ADDRESS),
+            //     self.memory.borrow().read(WY_ADDRESS)
+            // );
         }
     }
 
@@ -412,6 +404,8 @@ impl PPUMode for Draw {
 
 #[cfg(test)]
 mod tests {
+    use crate::registers::SCY_ADDRESS;
+
     use super::*;
 
     fn get_test_ppu() -> PPU {

@@ -8,6 +8,7 @@ use crate::cpu::Operand::{Immediate, Indirect, Register};
 use crate::cpu::OperandU16::{ImmediateU16, RegisterPair};
 use crate::mem_manager::MemManager;
 use crate::memory::Memory;
+use crate::registers::STAT_ADDRESS;
 
 #[derive(Clone, Copy)]
 enum Operand {
@@ -579,7 +580,6 @@ impl CPU {
     }
 }
 
-const STAT_ADDRESS: u16 = 0xFF41;
 impl Memory for CPU {
     fn read(&self, address: u16) -> u8 {
         let mode = self.memory.borrow().read(STAT_ADDRESS) & 0b00000011;

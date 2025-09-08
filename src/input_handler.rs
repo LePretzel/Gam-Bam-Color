@@ -6,8 +6,7 @@ use sdl2::keyboard::Keycode;
 
 use crate::mem_manager::MemManager;
 use crate::memory::Memory;
-
-const JOYP_ADDRESS: u16 = 0xFF00;
+use crate::registers::JOYP_ADDRESS;
 
 pub struct InputHandler {
     memory: Rc<RefCell<MemManager>>,
@@ -83,7 +82,6 @@ impl InputHandler {
     }
 
     fn handle_keydown(&mut self, k: Keycode) {
-        // Set JOYP bit
         match k {
             Keycode::Z => self.action_input &= 0b11111101,
             Keycode::Left => self.direction_input &= 0b11111101,

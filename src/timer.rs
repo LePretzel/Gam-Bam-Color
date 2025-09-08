@@ -2,12 +2,9 @@ use std::{cell::RefCell, num::Wrapping, rc::Rc};
 
 use crate::mem_manager::MemManager;
 use crate::memory::Memory;
+use crate::registers::{DIV_ADDRESS, TAC_ADDRESS, TIMA_ADDRESS, TMA_ADDRESS};
 
 const BASE_SPEED: u32 = 16;
-const DIV_ADDRESS: u16 = 0xFF04;
-const TIMA_ADDRESS: u16 = 0xFF05;
-const TMA_ADDRESS: u16 = 0xFF06;
-const TAC_ADDRESS: u16 = 0xFF07;
 
 // TODO: implement more of the obscure timer behavior
 pub struct Timer {
