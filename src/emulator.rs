@@ -1,6 +1,7 @@
 use std::cell::RefCell;
 use std::fs;
 use std::rc::Rc;
+use std::time::Duration;
 
 use sdl2::pixels::PixelFormatEnum;
 
@@ -98,9 +99,11 @@ impl Emulator {
             .create_texture_target(PixelFormatEnum::BGR555, SCREEN_WIDTH, SCREEN_HEIGHT)
             .unwrap();
 
+        let frame_time: std::time::Duration = std::time::Duration::from_secs_f64(1.0 / 59.7);
         let mut dots = 0;
         let mut poll_timer = 0;
         let poll_limit = 1000;
+        let mut start = std::time::Instant::now();
         loop {
             poll_timer += 1;
             if poll_timer == poll_limit {
@@ -112,6 +115,12 @@ impl Emulator {
                 }
                 dots -= DOTS_PER_FRAME;
                 // Todo: sleep until time for frame to be displayed
+                let elapsed = start.elapsed();
+                let remainder = frame_time.saturating_sub(elapsed);
+
+                if remainder != Duration::ZERO && !self.input.is_throttled() {
+                    spin_sleep::sleep(remainder)
+                }
 
                 let frame = self.ppu.get_frame();
                 texture
@@ -119,6 +128,7 @@ impl Emulator {
                     .unwrap();
                 canvas.copy(&texture, None, None).unwrap();
                 canvas.present();
+                start = std::time::Instant::now();
                 // println!("New frame");
             }
             self.input.update();

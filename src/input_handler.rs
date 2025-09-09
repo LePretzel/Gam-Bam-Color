@@ -14,6 +14,7 @@ pub struct InputHandler {
     direction_selected: bool,
     action_input: u8,
     direction_input: u8,
+    throttled: bool,
 }
 
 impl InputHandler {
@@ -24,6 +25,7 @@ impl InputHandler {
             direction_selected: false,
             action_input: 0x0F,
             direction_input: 0x0F,
+            throttled: false,
         };
         input.memory.borrow_mut().force_write(JOYP_ADDRESS, 0xFF);
         input
@@ -32,6 +34,10 @@ impl InputHandler {
     pub fn update(&mut self) {
         self.check_action_or_dir();
         self.write_state();
+    }
+
+    pub fn is_throttled(&self) -> bool {
+        self.throttled
     }
 
     fn check_action_or_dir(&mut self) {
@@ -91,6 +97,7 @@ impl InputHandler {
             Keycode::Down => self.direction_input &= 0b11110111,
             Keycode::Backspace => self.action_input &= 0b11111011,
             Keycode::Up => self.direction_input &= 0b11111011,
+            Keycode::Space => self.throttled = !self.throttled,
             _ => (),
         }
     }
