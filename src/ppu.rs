@@ -239,7 +239,7 @@ impl Scan {
             let object_y = ppu.memory.borrow().read(address);
 
             let object_attrs = ppu.memory.borrow().read(address + 3);
-            let is_large_object = object_attrs & 0b01000000 != 0;
+            // let is_large_object = object_attrs & 0b01000000 != 0;
             let object_size = if large_objects_enabled { 16 } else { 8 };
             let object_top = object_y as i8 - 16;
             let object_bottom = object_top + object_size;

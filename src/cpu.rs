@@ -33,10 +33,10 @@ impl Instruction {
         Instruction { cycles, inst }
     }
 
-    pub fn execute(&mut self, cpu: &mut CPU) {
-        let inst = &self.inst;
-        inst(cpu);
-    }
+    // pub fn execute(&mut self, cpu: &mut CPU) {
+    //     let inst = &self.inst;
+    //     inst(cpu);
+    // }
 }
 
 pub struct CPU {

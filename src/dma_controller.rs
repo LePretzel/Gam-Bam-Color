@@ -68,7 +68,7 @@ impl DMAController {
         }
     }
 
-    fn handle_vram_dma() {}
+    // fn handle_vram_dma() {}
 }
 
 #[cfg(test)]

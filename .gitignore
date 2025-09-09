@@ -1,3 +1,5 @@
 /target
-/src/test_roms
-.vscode/
+/src/test_roms/games
+/src/test_roms/complete
+/src/test_roms/mooneye
+
