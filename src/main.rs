@@ -1,3 +1,4 @@
+use clap::Parser;
 use emulator::Emulator;
 
 mod cpu;
@@ -12,20 +13,29 @@ mod ppu;
 mod registers;
 mod timer;
 
-fn main() {
-    // let sphl_path = "src/test_roms/sphl.gb";
-    // let misc_path = "src/test_roms/misc.gb";
-    // let ld_path = "src/test_roms/ldrr.gb";
-    // let jp_path = "src/test_roms/jp.gb";
-    // let rimm_path = "src/test_roms/rimm.gb";
-    // let bitops_path = "src/test_roms/bitops.gb";
-    // let oprr_path = "src/test_roms/oprr.gb";
-    // let special_path = "src/test_roms/special.gb";
-    // let opahl_path = "src/test_roms/opahl.gb";
-    // let interrupt_path = "src/test_roms/interrupts.gb";
-    let cpu_rom_path = "src/test_roms/cpu_full.gb";
-    // let instr_timing_path = "src/test_roms/instr_timing.gb";
+// const SPHL_PATH: &str = "src/test_roms/sphl.gb";
+// const MISC_PATH: &str = "src/test_roms/misc.gb";
+// const LD_PATH: &str = "src/test_roms/ldrr.gb";
+// const JP_PATH: &str = "src/test_roms/jp.gb";
+// const RIMM_PATH: &str = "src/test_roms/rimm.gb";
+// const BITOPS_PATH: &str = "src/test_roms/bitops.gb";
+// const OPRR_PATH: &str = "src/test_roms/oprr.gb";
+// const SPECIAL_PATH: &str = "src/test_roms/special.gb";
+// const OPAHL_PATH: &str = "src/test_roms/opahl.gb";
+// const INTERRUPT_PATH: &str = "src/test_roms/interrupts.gb";
+const CPU_ROM_PATH: &str = "src/test_roms/cpu_full.gb";
+// const INSTR_TIMING_PATH: &str = "src/test_roms/instr_timing.gb";
 
+#[derive(Parser, Debug)]
+#[command(version, about, long_about = None)]
+struct Args {
+    #[arg(short, long, default_value = CPU_ROM_PATH)]
+    rom_path: String,
+}
+
+fn main() {
     let mut emulator = Emulator::new();
-    emulator.load_and_run(cpu_rom_path);
+    let args = Args::parse();
+
+    emulator.load_and_run(&args.rom_path);
 }
